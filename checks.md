@@ -1,283 +1,106 @@
-G-Squad — Complete User-Side Application
+Continue developing my existing G-Squad project in GitHub Codespaces. Both the admin panel and user-side application have already been built.
 
-Build the complete user-side application for G-Squad, a multi-user Deriv automated trading platform. This is a new application whose admin panel has already been created. Integrate the user side with the existing admin backend and database.
+Implement the persistent database, wallet backend, and admin-managed configuration system. Do not rebuild either interface or replace the existing framework.
 
-IMPORTANT: Do not rebuild, replace, or damage the existing admin panel, authentication, database, or backend. Inspect and reuse the existing architecture, API routes, database models, and design system. Implement the user-side features as part of the existing project.
+1. Inspect the existing project first
 
-1. Design and Navigation
+- Identify the framework, backend API, authentication system, database, and existing configuration.
+- Determine whether a database is already configured and whether it is actually connected and working.
+- Reuse existing database models and infrastructure where practical.
+- If no suitable persistent database exists, recommend and implement PostgreSQL with safe migrations.
+- Do not create duplicate systems or remove working functionality.
 
-- Use a clean, modern fintech design.
-- Light background with blue primary buttons.
-- Professional cards, readable typography, clear status indicators, and responsive layouts.
-- Prioritize a mobile-first experience while supporting desktop.
-- Prevent content from hiding underneath the header or bottom navigation.
-- Ensure proper scrolling, spacing, loading states, error messages, and empty states.
-- Use a consistent header and fixed bottom navigation that does not cover page content.
+2. Admin-managed configuration
+Create a protected Configuration/Settings section in the existing admin UI so authorized administrators can manage application settings without editing source code or redeploying for ordinary configuration changes.
 
-Bottom navigation:
+Include:
 
-- Dashboard
-- Wallet
-- Bot
-- Risk
-- Account
+- Deriv API connection settings and App ID.
+- Secure Deriv PAT entry, replacement, and connection testing.
+- Trading engine enable/disable and emergency stop.
+- Allowed market and contract settings.
+- Maximum combined stake and global risk limits.
+- Deposit methods and payment-provider configuration.
+- Withdrawal settings, minimums, maximums, and applicable fees.
+- Application-wide operational settings.
 
-Keep the interface simple and focused on the user's essential activities.
+Persist non-secret settings in the database. Store secret credentials in an appropriate encrypted server-side secret store or secure backend configuration service. Never expose secrets in frontend code, browser storage, logs, API responses, or GitHub.
 
-2. Welcome, Registration and Login
+The admin UI must mask stored secrets and must never return the existing PAT to the browser. Allow authorized administrators to replace a secret without revealing its current value.
 
-Create a polished welcome page with the G-Squad logo, a short introduction, and Login and Register buttons.
+Validate every setting on the server. Enforce admin authorization on every configuration endpoint, audit sensitive changes, and prevent unsafe changes while trading is active.
 
-Registration fields:
+Do not pretend that configuration changes are successful until persistence is confirmed.
 
-- Full name
-- Email address
-- Password
-- Confirm password
-- Acceptance of terms and privacy policy
+3. Database and wallet backend
+Persist:
 
-Requirements:
+- User accounts and authentication records.
+- Individual USD wallet balances and reserved funds.
+- Wallet ledger entries.
+- Deposit and withdrawal requests.
+- User stake and risk settings.
+- Trading rounds and frozen participant contributions.
+- Deriv trade records and confirmed results.
+- Individual profit/loss allocations.
+- Admin configuration and audit logs.
 
-- Verify email addresses before granting normal account access.
-- Provide secure login, logout, password reset, and email verification flows.
-- Use the existing authentication system where available.
-- Generate a unique user account ID in the format GSQ-XXXXXX.
-- Enforce unique email addresses and account IDs.
-- Protect all private pages and API requests.
-- Never store passwords in plaintext.
-- Never allow users to access another user's wallet or trading records.
+Use exact decimal arithmetic or integer minor units for financial calculations. Use database transactions, idempotency keys, and concurrency controls to prevent negative balances, duplicate credits, and concurrent overspending.
 
-3. User Dashboard
+Keep each user's wallet separate from the real Deriv account balance.
 
-Create a professional dashboard displaying:
+4. Shared trading engine
+Prepare the backend for the intended G-Squad model:
 
-- Available wallet balance in USD.
-- Total deposited.
-- Total withdrawn.
-- Realized profit/loss.
-- Current bot status.
-- User's configured stake.
-- Maximum daily loss.
-- Daily profit target and progress.
-- Recent trading activity.
-- Important account notifications.
+- Each user independently starts or stops their bot.
+- When a signal is approved, identify eligible users and freeze their stake contributions.
+- Calculate and validate the combined stake.
+- Submit one combined trade through the configured admin Deriv account only when the integration is operational and the arrangement is authorized.
+- Record the actual confirmed Deriv contract details and settlement.
+- Allocate actual net profit or loss proportionally to each user's contribution.
+- Update each user's wallet exactly once.
 
-Include a clear Start Bot or Stop Bot control and a visible status indicator.
+Handle rejected orders, timeouts, duplicate signals, and settlement recovery safely. Never fabricate trade results or estimated payouts.
 
-Do not display fabricated balances or profits. Clearly label any development or demo data.
+5. Security and operational requirements
 
-4. Personal Wallet
+- Keep all secret credentials server-side.
+- Use secure admin authentication, role-based authorization, password hashing, rate limiting, and audit logs.
+- Validate and sanitize configuration inputs.
+- Require explicit confirmation for sensitive actions such as changing credentials or enabling live trading.
+- Provide a safe demo/test mode.
+- Do not enable real-money trading automatically after deployment or restart.
+- Do not accept customer deposits until payment verification and wallet accounting are operational and the business model has been appropriately authorized.
 
-Each user must have an individual internal G-Squad wallet denominated in USD.
+6. Implementation
 
-Display:
+- Make the smallest safe changes to the existing codebase.
+- Do not rebuild the admin panel or user app.
+- Add migrations and tests as needed.
+- Test database persistence, admin permissions, configuration updates, secret masking, wallet accounting, duplicate settlement prevention, and the existing application build.
+- Report the database found or created, files changed, environment variables still required, configuration now manageable through the admin UI, tests performed, and remaining setup steps.
 
-- Available balance.
-- Reserved funds, if applicable.
-- Funds committed to active trading rounds.
-- Total deposits and withdrawals.
-- Realized profit/loss.
-- Complete transaction history.
+Start by inspecting the project, then implement these changes incrementally without destructive edits.
 
-Implement a persistent wallet ledger with unique transaction references and auditable entries.
+Continue working on my existing G-Squad project. First inspect the current implementation and fix any incomplete parts without rebuilding the app or removing working features.
 
-Rules:
+1. Database: Verify that the database is configured, connected, persistent, and migrations work. If missing, set up a suitable persistent database and document the required connection settings.
 
-- Update balances only through trusted server-side operations.
-- Prevent negative balances, unauthorized balance changes, and duplicate credits or debits.
-- Use database transactions and idempotency protection.
-- Never let the frontend directly set a user's wallet balance.
-- Keep wallet balances and actual admin Deriv account funds clearly distinguished.
+2. Admin configuration: Verify that the admin can manage application settings through the existing admin UI, including Deriv App ID, securely entering or replacing the Deriv PAT, trading controls, risk limits, and payment settings. Keep secrets server-side and never expose them in the browser or logs.
 
-5. Deposit System
+3. Wallet and trading backend: Verify user balances, stake reservations, trading rounds, actual Deriv settlement records, and proportional profit/loss allocation. Prevent negative balances and duplicate payouts.
 
-Create a deposit page with:
+4. Security: Verify admin permissions, API protection, input validation, audit logs, and secure secret handling. Keep live trading disabled by default.
 
-- Amount input in USD.
-- Supported payment method display.
-- Payment instructions.
-- Unique deposit reference.
-- Deposit status and transaction history.
+5. Testing: Run the available tests and production build. Fix errors introduced by these changes. Test database persistence, admin settings, wallet accounting, and duplicate-settlement prevention using safe test data or demo mode.
 
-Support the future integration of USDT on the TRON network (TRC20), with the payment provider configurable by the administrator.
+6. Final report: Do not just describe what should be done. Implement what is possible in the existing project, then report:
 
-Deposit workflow:
-
-1. User submits a deposit request.
-2. Backend creates a pending deposit record.
-3. Payment is verified using trusted provider confirmation or an authenticated administrator workflow.
-4. Credit the wallet only after confirmed payment.
-5. Record the payment reference and ledger entry.
-6. Prevent duplicate payment processing.
-
-Never mark an unverified payment as successful. Do not build fake payment confirmations.
-
-6. Withdrawal System
-
-Create a withdrawal page where users can:
-
-- Enter an amount.
-- Select a supported withdrawal method.
-- Provide the required destination details securely.
-- Review fees and the estimated net amount where configured.
-- Submit and track withdrawal requests.
-
-Workflow:
-
-1. Validate the available balance on the backend.
-2. Reserve or debit the requested amount safely according to the existing ledger design.
-3. Create a pending withdrawal record.
-4. Allow the administrator or approved payment provider to process it.
-5. Update the status only after the appropriate payment result is confirmed.
-6. Release reserved funds if a withdrawal fails or is cancelled.
-7. Prevent duplicate withdrawals and concurrent overspending.
-
-Display pending, processing, completed, rejected, and failed statuses accurately.
-
-7. Bot Control
-
-Create a dedicated Bot page with:
-
-- Start Bot and Stop Bot buttons.
-- Connection status.
-- Trading engine status.
-- Current market.
-- Current trading round status.
-- Last signal status.
-- Current stake.
-- Daily profit/loss.
-- Daily target progress.
-- Clear messages for paused, disconnected, waiting, and stopped states.
-
-The user's bot should wait for approved signals and participate only while the user is eligible.
-
-Starting or stopping the user's bot must update persistent backend state, not just the frontend.
-
-A user stopping their bot must prevent participation in future rounds without corrupting a trade that has already been submitted.
-
-Do not claim a bot is running or connected unless the backend confirms it.
-
-8. Risk Management
-
-Create a dedicated Risk page where users can configure:
-
-- Stake amount in USD.
-- Maximum daily loss.
-- Daily profit target.
-
-Requirements:
-
-- Validate all inputs on both frontend and backend.
-- Prevent stakes exceeding available eligible funds or configured limits.
-- Apply risk settings before including a user in a new trading round.
-- Stop further participation when the user's daily loss limit or profit target is reached.
-- Prevent users from bypassing risk limits through repeated requests.
-- Display saved settings and clear validation messages.
-- Do not expose hidden strategy rules or internal trading algorithms.
-
-Do not add unnecessary trading controls or strategy settings to the user interface.
-
-9. Shared Deriv Trading Model
-
-Prepare the user side to integrate with the existing admin trading engine.
-
-The intended model is:
-
-- Each user has an individual internal wallet and independently starts or stops their bot.
-- When the backend approves a signal, it identifies eligible users.
-- The backend freezes the participant list and each user's exact stake for that trading round.
-- The backend calculates the combined stake.
-- One combined trade is submitted through the configured admin Deriv account, subject to the account's capabilities and authorization for this business model.
-- The backend records the actual Deriv contract ID, confirmed stake, payout, and net result.
-- The backend distributes the actual net profit or loss proportionally to each participant's stake contribution.
-- Each participant's wallet is updated exactly once.
-
-For example, if the combined stake is $100 and the confirmed net profit is $20, a participant contributing $25 receives a $5 allocation of the profit. The original stake is accounted for separately so it is not accidentally credited twice.
-
-Use actual confirmed Deriv settlement data. Never calculate profits from assumed returns or fixed percentages.
-
-Implement safe handling for rejected trades, insufficient funds, network timeouts, duplicate signals, partial failures, and repeated settlement messages.
-
-Do not enable real-money trading until the backend integration and the proposed operating model have been verified.
-
-10. Trading Activity
-
-Create a personal trading history page displaying only the current user's records:
-
-- Trading round ID.
-- Date and time.
-- User's contributed stake.
-- Contract outcome.
-- Allocated profit or loss.
-- Settlement status.
-- Wallet transaction reference.
-
-Display pending, won, lost, rejected, and failed states only when supported by actual backend records.
-
-Provide useful empty states when the user has no trading activity.
-
-11. Account and Profile
-
-Create an Account page containing:
-
-- Full name.
-- Email address and verification status.
-- G-Squad account ID.
-- Password change and password reset options.
-- Notification preferences.
-- Security settings.
-- Support access.
-- Terms and privacy policy.
-- Logout.
-
-Do not display the admin's Deriv credentials or other users' private information.
-
-12. Notifications and Support
-
-Provide in-app notifications for important events:
-
-- Deposit confirmation.
-- Withdrawal status changes.
-- Bot connection problems.
-- Daily loss limit reached.
-- Daily profit target reached.
-- Important account or security alerts.
-
-Do not send notifications every time a trade is placed, won, or lost. Show trading activity in the history page instead.
-
-Build a support page that fits the existing G-Squad design and integrates with the existing support system if one exists.
-
-13. Backend and Security
-
-Reuse the existing backend and database. Add only the necessary models, API endpoints, validation, and migrations.
-
-Enforce server-side authorization on every user-specific endpoint.
-
-Implement:
-
-- Secure sessions or the existing secure authentication mechanism.
-- Password hashing and rate limiting.
-- Input validation.
-- Database transactions.
-- Idempotent payment and settlement processing.
-- Audit logs for financial operations.
-- Ownership checks for every wallet, transaction, and trading record.
-- Secure error handling without exposing credentials or sensitive internals.
-
-Keep DERIV_PAT and DERIV_APP_ID exclusively on the backend in environment variables or an appropriate secret manager. Never expose the PAT in frontend code, browser storage, API responses, or GitHub.
-
-14. Implementation and Testing
-
-Implement the user side in the existing project without removing admin functionality.
-
-- Reuse existing components, routes, and database structures where appropriate.
-- Avoid unnecessary dependencies and unrelated refactoring.
-- Implement working functionality rather than static mockups.
-- Clearly label any features that still require external provider configuration.
-- Test registration, login, authorization, wallet accounting, deposit verification, withdrawal processing, bot controls, risk limits, and settlement idempotency.
-- Ensure the app builds successfully and works on mobile.
-- Use demo funds and test data until all required integrations are verified.
-
-When finished, summarize the pages created, backend functionality implemented, database changes, tests performed, and configuration still required.
-
-Begin by implementing the complete user-side application and integrating it with the existing G-Squad admin system. Preserve the established project architecture and do not rebuild the admin panel.
+- Whether the database is working and which database is used.
+- Which features are implemented and tested.
+- Which files were changed.
+- Which environment variables or external services I still need to configure.
+- Any errors or unfinished work.
+- The exact next step I should take.
+
+Make minimal, safe changes. Do not claim a feature works unless you have verified it. Do not enable real-money trading or accept real deposits until the relevant integrations are verified.
