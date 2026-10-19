@@ -35,7 +35,7 @@ G-Squad is a Node.js, Express, React, and SQLite application with separate membe
 
    Open <http://localhost:3000>.
 
-5. To enable member registration, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. Set `APP_ORIGIN` to the exact public origin so verification and password-reset links point to the deployed application. In production, `APP_ORIGIN` must use HTTPS. Registration remains unavailable until SMTP is configured.
+5. To enable member registration, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. Use `SMTP_SECURE=true` for implicit TLS (commonly port 465); port 587 typically uses STARTTLS. Set `APP_ORIGIN` to the exact public origin so verification and password-reset links point to the deployed application. In production, `APP_ORIGIN` must use HTTPS. Registration remains unavailable until SMTP is configured.
 
 For a production-style static build and server:
 
