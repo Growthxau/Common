@@ -1,10 +1,28 @@
 {
-  "name": "daybook",
+  "name": "g-squad",
   "version": "1.0.0",
   "private": true,
-  "description": "A small personal task list built with Node.js",
+  "description": "G-Squad admin dashboard foundation",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node --env-file-if-exists=.env server/index.js --production",
+    "dev": "node --env-file-if-exists=.env --watch server/index.js",
+    "build": "vite build",
+    "admin:create": "node --env-file-if-exists=.env scripts/create-admin.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "vite": "^7.3.7"
   }
 }

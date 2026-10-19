@@ -1,0 +1,140 @@
+const path = require('node:path');
+const express = require('express');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const { rateLimit } = require('express-rate-limit');
+const db = require('./db');
+const adminRouter = require('./admin');
+const { audit, login, logout, requireAdmin } = require('./auth');
+
+const app = express();
+const port = Number(process.env.PORT) || 3000;
+const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
+
+if (production) process.env.NODE_ENV = 'production';
+
+app.disable('x-powered-by');
+app.set('trust proxy', process.env.TRUST_PROXY || (production ? false : 'loopback'));
+app.use(helmet({
+  strictTransportSecurity: production,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'self'"],
+      connectSrc: ["'self'", 'ws:', 'wss:'],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"],
+      imgSrc: ["'self'", 'data:'],
+      objectSrc: ["'none'"],
+      scriptSrc: ["'self'"],
+      styleSrc: production ? ["'self'"] : ["'self'", "'unsafe-inline'"],
+      upgradeInsecureRequests: production ? [] : null,
+    },
+  },
+}));
+app.use('/api', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+
+function requireSameOrigin(request, response, next) {
+  const origin = request.get('origin');
+  const expectedOrigin = process.env.APP_ORIGIN || `${request.protocol}://${request.get('host')}`;
+  try {
+    if (origin && new URL(origin).origin === new URL(expectedOrigin).origin) return next();
+  } catch {
+    return response.status(403).json({ error: 'Request origin was rejected.' });
+  }
+  return response.status(403).json({ error: 'Request origin was rejected.' });
+}
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many sign-in attempts. Please try again later.' },
+});
+
+function requireSameOriginForChanges(request, response, next) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return next();
+  return requireSameOrigin(request, response, next);
+}
+
+app.use('/api/auth/login', loginLimiter, requireSameOriginForChanges);
+app.use('/api/auth/logout', requireSameOriginForChanges);
+app.use('/api/admin', requireSameOriginForChanges);
+app.use(express.json({ limit: '12kb', strict: true }));
+app.use(cookieParser());
+
+app.get('/api/health', (request, response) => response.json({
+  status: 'ok',
+  tradingEnabled: false,
+  paymentsEnabled: false,
+}));
+
+app.post('/api/auth/login', login);
+app.get('/api/auth/me', requireAdmin, (request, response) => {
+  response.json({ user: request.admin, tradingEnabled: false, paymentsEnabled: false });
+});
+app.post('/api/auth/logout', logout);
+app.use('/api/admin', requireAdmin, adminRouter);
+app.use('/api', (request, response) => response.status(404).json({ error: 'API route not found.' }));
+
+async function start() {
+  let vite;
+  if (production) {
+    const buildDirectory = path.resolve('dist');
+    app.use(express.static(buildDirectory, { index: false, fallthrough: true }));
+    app.get(/.*/, (request, response, next) => {
+      response.sendFile(path.join(buildDirectory, 'index.html'), (error) => {
+        if (error) next(error);
+      });
+    });
+  } else {
+    const { createServer } = await import('vite');
+    vite = await createServer({
+      appType: 'spa',
+      server: { middlewareMode: true },
+    });
+    app.use(vite.middlewares);
+  }
+
+  app.use((error, request, response, next) => {
+    console.error('Request failed:', {
+      method: request.method,
+      path: request.path,
+      type: error.type || error.name,
+      status: error.status,
+    });
+    if (response.headersSent) return next(error);
+    return response.status(500).json({ error: 'The request could not be completed.' });
+  });
+
+  const server = app.listen(port, '0.0.0.0', () => {
+    db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(new Date().toISOString());
+    console.log(`G-Squad admin is running at http://localhost:${port}`);
+    console.log('Live trading and payment processing are disabled.');
+  });
+
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    Promise.resolve(vite?.close())
+      .catch((error) => console.error('Could not close Vite cleanly:', error))
+      .finally(() => {
+        server.close(() => db.close());
+        server.closeAllConnections();
+      });
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+}
+
+start().catch((error) => {
+  console.error('Could not start G-Squad:', error);
+  process.exitCode = 1;
+});
