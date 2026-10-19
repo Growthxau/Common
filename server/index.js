@@ -6,6 +6,7 @@ const { rateLimit } = require('express-rate-limit');
 const db = require('./db');
 const adminRouter = require('./admin');
 const { audit, login, logout, requireAdmin } = require('./auth');
+const userModule = require('./user');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -58,6 +59,30 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many sign-in attempts. Please try again later.' },
 });
 
+const userLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many sign-in attempts. Please try again later.' },
+});
+
+const userRegistrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many account creation attempts. Please try again later.' },
+});
+
+const userRecoveryLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many account recovery attempts. Please try again later.' },
+});
+
 function requireSameOriginForChanges(request, response, next) {
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return next();
   return requireSameOrigin(request, response, next);
@@ -66,6 +91,7 @@ function requireSameOriginForChanges(request, response, next) {
 app.use('/api/auth/login', loginLimiter, requireSameOriginForChanges);
 app.use('/api/auth/logout', requireSameOriginForChanges);
 app.use('/api/admin', requireSameOriginForChanges);
+app.use('/api/user', requireSameOriginForChanges);
 app.use(express.json({ limit: '12kb', strict: true }));
 app.use(cookieParser());
 
@@ -80,6 +106,24 @@ app.get('/api/auth/me', requireAdmin, (request, response) => {
   response.json({ user: request.admin, tradingEnabled: false, paymentsEnabled: false });
 });
 app.post('/api/auth/logout', logout);
+app.post('/api/user/register', userRegistrationLimiter, userModule.register);
+app.post('/api/user/login', userLoginLimiter, userModule.login);
+app.post('/api/user/verify-email', userRecoveryLimiter, userModule.verifyEmail);
+app.post('/api/user/resend-verification', userRecoveryLimiter, userModule.resendVerification);
+app.post('/api/user/password/forgot', userRecoveryLimiter, userModule.requestPasswordReset);
+app.post('/api/user/password/reset', userRecoveryLimiter, userModule.resetPassword);
+app.get('/api/user/me', userModule.requireUser, (request, response) => {
+  response.json({ user: {
+    id: request.user.id,
+    accountId: request.user.account_id,
+    name: request.user.display_name,
+    email: request.user.email,
+    emailVerified: Boolean(request.user.email_verified),
+    currency: request.user.currency,
+  } });
+});
+app.post('/api/user/logout', userModule.requireUser, userModule.logout);
+app.use('/api/user', userModule.requireUser, userModule.router);
 app.use('/api/admin', requireAdmin, adminRouter);
 app.use('/api', (request, response) => response.status(404).json({ error: 'API route not found.' }));
 
@@ -115,7 +159,7 @@ async function start() {
 
   const server = app.listen(port, '0.0.0.0', () => {
     db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(new Date().toISOString());
-    console.log(`G-Squad admin is running at http://localhost:${port}`);
+    console.log(`G-Squad is running at http://localhost:${port}`);
     console.log('Live trading and payment processing are disabled.');
   });
 

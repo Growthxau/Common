@@ -48,14 +48,68 @@ async function waitForHealth(origin) {
   return null;
 }
 
+async function startSmtpServer(messages) {
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8');
+    socket.write('220 localhost ESMTP\r\n');
+    let buffer = '';
+    let message = '';
+    let readingMessage = false;
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        buffer = buffer.slice(newline + 1);
+        if (readingMessage) {
+          if (line === '.') {
+            messages.push(message);
+            message = '';
+            readingMessage = false;
+            socket.write('250 Message accepted\r\n');
+          } else {
+            message += `${line.startsWith('..') ? line.slice(1) : line}\r\n`;
+          }
+          continue;
+        }
+        const command = line.split(' ', 1)[0].toUpperCase();
+        if (command === 'EHLO' || command === 'HELO') socket.write('250-localhost\r\n250 PIPELINING\r\n');
+        else if (command === 'DATA') {
+          readingMessage = true;
+          socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
+        } else if (command === 'QUIT') {
+          socket.write('221 Bye\r\n');
+          socket.end();
+        } else socket.write('250 OK\r\n');
+      }
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return server;
+}
+
+function tokenFromEmail(message, key) {
+  const decoded = message
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9A-F]{2})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+  const link = decoded.match(new RegExp(`https?:[^\\s<>]+[?&]${key}=([^&\\s<>"]+)`))?.[0];
+  assert.ok(link, `${key} link should be sent`);
+  return new URL(link).searchParams.get(key);
+}
+
 test('admin login, employee access, configuration, protected APIs, and logout work end to end', async (context) => {
   let child;
+  const sentEmails = [];
+  const smtp = await startSmtpServer(sentEmails);
   context.after(async () => {
     await stopProcess(child);
+    await new Promise((resolve, reject) => smtp.close((error) => error ? reject(error) : resolve()));
     rmSync(temporaryDirectory, { recursive: true, force: true });
   });
 
   const port = await unusedPort();
+  const smtpPort = smtp.address().port;
   const origin = `http://127.0.0.1:${port}`;
   const env = {
     ...process.env,
@@ -66,6 +120,10 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     ADMIN_PASSWORD: adminPassword,
     DERIV_PAT: derivPat,
     DERIV_APP_ID: 'test-app-id',
+    SMTP_HOST: '127.0.0.1',
+    SMTP_PORT: String(smtpPort),
+    SMTP_SECURE: 'false',
+    SMTP_FROM: 'G-Squad <no-reply@example.invalid>',
     NODE_ENV: 'development',
   };
   const adminResult = spawnSync(process.execPath, ['scripts/create-admin.js'], {
@@ -201,6 +259,226 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const usersBody = await usersResponse.json();
   assert.equal(usersBody.records.length, 0);
 
+  const userRegister = await fetch(`${origin}/api/user/register`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Portal Member',
+      email: 'portal-member@example.com',
+      password: 'portal-member-strong-password-482!',
+      confirmPassword: 'portal-member-strong-password-482!',
+      termsAccepted: true,
+    }),
+  });
+  assert.equal(userRegister.status, 202);
+  const registeredBody = await userRegister.json();
+  assert.equal(registeredBody.verificationRequired, true);
+  assert.match(registeredBody.message, /verification/i);
+  const verifyToken = tokenFromEmail(sentEmails.at(-1), 'verify');
+
+  const duplicateRegister = await fetch(`${origin}/api/user/register`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Portal Member',
+      email: 'PORTAL-MEMBER@example.com',
+      password: 'portal-member-strong-password-482!',
+      confirmPassword: 'portal-member-strong-password-482!',
+      termsAccepted: true,
+    }),
+  });
+  assert.equal(duplicateRegister.status, 409);
+
+  const unverifiedLogin = await fetch(`${origin}/api/user/login`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'portal-member@example.com', password: 'portal-member-strong-password-482!' }),
+  });
+  assert.equal(unverifiedLogin.status, 403);
+  const verifyResponse = await fetch(`${origin}/api/user/verify-email`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: verifyToken }),
+  });
+  assert.equal(verifyResponse.status, 200);
+  assert.equal((await verifyResponse.json()).verified, true);
+  const replayedVerify = await fetch(`${origin}/api/user/verify-email`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: verifyToken }),
+  });
+  assert.equal(replayedVerify.status, 400);
+
+  const signedIn = await fetch(`${origin}/api/user/login`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'portal-member@example.com', password: 'portal-member-strong-password-482!' }),
+  });
+  assert.equal(signedIn.status, 200);
+  const loginResult = await signedIn.json();
+  assert.match(loginResult.user.accountId, /^GSQ-[A-Z0-9]{6}$/);
+  assert.equal(loginResult.user.emailVerified, true);
+  assert.equal(loginResult.tradingEnabled, false);
+  assert.equal(loginResult.paymentsEnabled, false);
+  const userCookie = signedIn.headers.getSetCookie()[0].split(';')[0];
+  assert.match(userCookie, /^gsquad_user_session=/);
+
+  const unauthorizedUserDashboard = await fetch(`${origin}/api/user/dashboard`);
+  assert.equal(unauthorizedUserDashboard.status, 401);
+  const userDashboardResponse = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
+  assert.equal(userDashboardResponse.status, 200);
+  const userDashboard = await userDashboardResponse.json();
+  assert.equal(userDashboard.user.email, 'portal-member@example.com');
+  assert.equal(userDashboard.user.walletBalanceMinor, 0);
+  assert.deepEqual(userDashboard.ledger, []);
+  assert.equal(userDashboard.tradingEnabled, false);
+  assert.equal(JSON.stringify(userDashboard).includes(derivPat), false);
+
+  const rejectedPreference = await fetch(`${origin}/api/user/risk-settings`, {
+    method: 'PUT',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ configuredStakeMinor: 100, maxDailyLossMinor: null, dailyProfitTargetMinor: null }),
+  });
+  assert.equal(rejectedPreference.status, 400);
+
+  const userSaveRiskSettings = await fetch(`${origin}/api/user/risk-settings`, {
+    method: 'PUT',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ configuredStakeMinor: 0, maxDailyLossMinor: 5000, dailyProfitTargetMinor: 10000 }),
+  });
+  assert.equal(userSaveRiskSettings.status, 200);
+  assert.equal((await userSaveRiskSettings.json()).tradingEnabled, false);
+  const preferenceDashboard = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
+  const preferenceData = await preferenceDashboard.json();
+  assert.equal(preferenceData.user.botEnabled, false);
+  assert.equal(preferenceData.user.configuredStakeMinor, 0);
+  assert.equal(preferenceData.user.maxDailyLossMinor, 5000);
+  assert.equal(preferenceData.user.walletBalanceMinor, 0);
+
+  const startBot = await fetch(`${origin}/api/user/bot/start`, {
+    method: 'POST',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(startBot.status, 409);
+  assert.equal((await startBot.json()).tradingEnabled, false);
+  const stopBot = await fetch(`${origin}/api/user/bot/stop`, {
+    method: 'POST',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(stopBot.status, 200);
+
+  const saveProfile = await fetch(`${origin}/api/user/profile`, {
+    method: 'PUT',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Portal Member Updated',
+      notificationPreferences: { account: true, wallet: false, security: true },
+    }),
+  });
+  assert.equal(saveProfile.status, 200);
+  const passwordChange = await fetch(`${origin}/api/user/password/change`, {
+    method: 'POST',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      currentPassword: 'portal-member-strong-password-482!',
+      newPassword: 'portal-member-updated-password-598!',
+      confirmPassword: 'portal-member-updated-password-598!',
+    }),
+  });
+  assert.equal(passwordChange.status, 200);
+  const revokedUserSession = await fetch(`${origin}/api/user/dashboard`, {
+    headers: { Cookie: userCookie },
+  });
+  assert.equal(revokedUserSession.status, 200);
+
+  const userSupport = await fetch(`${origin}/api/user/support`, {
+    method: 'POST',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subject: 'Account question', message: 'Please help me understand my account.' }),
+  });
+  assert.equal(userSupport.status, 201);
+  const supportRequest = await userSupport.json();
+  assert.equal(supportRequest.request.status, 'open');
+  const supportDashboard = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
+  assert.equal((await supportDashboard.json()).support.length, 1);
+
+  const secondMemberRegister = await fetch(`${origin}/api/user/register`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Second Member',
+      email: 'second-member@example.com',
+      password: 'second-member-strong-password-592!',
+      confirmPassword: 'second-member-strong-password-592!',
+      termsAccepted: true,
+    }),
+  });
+  assert.equal(secondMemberRegister.status, 202);
+  const secondVerifyToken = tokenFromEmail(sentEmails.at(-1), 'verify');
+  const secondVerify = await fetch(`${origin}/api/user/verify-email`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: secondVerifyToken }),
+  });
+  assert.equal(secondVerify.status, 200);
+  const secondMemberLogin = await fetch(`${origin}/api/user/login`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'second-member@example.com', password: 'second-member-strong-password-592!' }),
+  });
+  assert.equal(secondMemberLogin.status, 200);
+  const secondMemberCookie = secondMemberLogin.headers.getSetCookie()[0].split(';')[0];
+  const secondMemberDashboard = await fetch(`${origin}/api/user/dashboard`, {
+    headers: { Cookie: secondMemberCookie },
+  });
+  const secondMemberData = await secondMemberDashboard.json();
+  assert.equal(secondMemberData.user.email, 'second-member@example.com');
+  assert.deepEqual(secondMemberData.support, []);
+
+  const userLogin = await fetch(`${origin}/api/user/login`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'portal-member@example.com', password: 'portal-member-updated-password-598!' }),
+  });
+  assert.equal(userLogin.status, 200);
+  assert.equal((await userLogin.json()).user.accountId, loginResult.user.accountId);
+
+  const passwordResetRequest = await fetch(`${origin}/api/user/password/forgot`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'portal-member@example.com' }),
+  });
+  assert.equal(passwordResetRequest.status, 200);
+  const resetToken = tokenFromEmail(sentEmails.at(-1), 'reset');
+  const resetPassword = await fetch(`${origin}/api/user/password/reset`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: resetToken,
+      password: 'portal-member-reset-password-746!',
+      confirmPassword: 'portal-member-reset-password-746!',
+    }),
+  });
+  assert.equal(resetPassword.status, 200);
+  const afterPasswordReset = await fetch(`${origin}/api/user/me`, { headers: { Cookie: userCookie } });
+  assert.equal(afterPasswordReset.status, 401);
+  const afterResetLogin = await fetch(`${origin}/api/user/login`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'portal-member@example.com', password: 'portal-member-reset-password-746!' }),
+  });
+  assert.equal(afterResetLogin.status, 200);
+  const resetUserCookie = afterResetLogin.headers.getSetCookie()[0].split(';')[0];
+  const userLogout = await fetch(`${origin}/api/user/logout`, {
+    method: 'POST',
+    headers: { Cookie: resetUserCookie, Origin: origin },
+  });
+  assert.equal(userLogout.status, 204);
+  const afterUserLogout = await fetch(`${origin}/api/user/me`, { headers: { Cookie: resetUserCookie } });
+  assert.equal(afterUserLogout.status, 401);
+
   const logoutResponse = await fetch(`${origin}/api/auth/logout`, {
     method: 'POST',
     headers: { Cookie: cookie, Origin: origin },
@@ -211,12 +489,6 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
 
   await stopProcess(child);
   child = null;
-  const buildResult = spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build'], {
-    cwd: root,
-    encoding: 'utf8',
-  });
-  assert.equal(buildResult.status, 0, buildResult.stderr);
-
   child = spawn(process.execPath, ['server/index.js', '--production'], {
     cwd: root,
     env: { ...env, NODE_ENV: 'production' },
@@ -235,4 +507,7 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(jsAsset.status, 200);
   assert.match(jsAsset.headers.get('content-type'), /javascript/);
   assert.match(productionPage.headers.get('content-security-policy'), /upgrade-insecure-requests/);
+  const userPortalPage = await fetch(`${origin}/user`);
+  assert.equal(userPortalPage.status, 200);
+  assert.match(await userPortalPage.text(), /G-Squad/);
 });

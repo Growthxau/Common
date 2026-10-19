@@ -36,6 +36,10 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
     bot_enabled INTEGER NOT NULL DEFAULT 0 CHECK (bot_enabled IN (0, 1)),
     configured_stake_minor INTEGER NOT NULL DEFAULT 0 CHECK (configured_stake_minor >= 0),
+    max_daily_loss_minor INTEGER CHECK (max_daily_loss_minor IS NULL OR max_daily_loss_minor >= 0),
+    daily_profit_target_minor INTEGER CHECK (daily_profit_target_minor IS NULL OR daily_profit_target_minor >= 0),
+    email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1)),
+    notification_preferences_json TEXT NOT NULL DEFAULT '{"account":true,"wallet":true,"security":true}',
     currency TEXT NOT NULL DEFAULT 'USD',
     is_demo INTEGER NOT NULL DEFAULT 0 CHECK (is_demo IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -249,6 +253,50 @@ db.exec(`
     updated_by_admin_id TEXT REFERENCES admin_users(id),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+`);
+
+const userColumns = new Set(db.pragma('table_info(users)').map((column) => column.name));
+const userMigrations = [
+  ['password_hash', 'TEXT'],
+  ['max_daily_loss_minor', 'INTEGER CHECK (max_daily_loss_minor IS NULL OR max_daily_loss_minor >= 0)'],
+  ['daily_profit_target_minor', 'INTEGER CHECK (daily_profit_target_minor IS NULL OR daily_profit_target_minor >= 0)'],
+  ['email_verified', 'INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0, 1))'],
+  ['notification_preferences_json', `TEXT NOT NULL DEFAULT '{"account":true,"wallet":true,"security":true}'`],
+];
+for (const [column, definition] of userMigrations) {
+  if (!userColumns.has(column)) {
+    db.exec(`ALTER TABLE users ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS user_sessions_expiry_idx ON user_sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS support_requests_user_created_idx ON support_requests(user_id, created_at);
+  CREATE TABLE IF NOT EXISTS user_action_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action TEXT NOT NULL CHECK (action IN ('verify_email', 'password_reset')),
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS user_action_tokens_expiry_idx ON user_action_tokens(expires_at);
+  CREATE TABLE IF NOT EXISTS user_notifications (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    read_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS user_notifications_user_created_idx
+    ON user_notifications(user_id, created_at);
 `);
 
 module.exports = db;

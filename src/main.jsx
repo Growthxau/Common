@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { UserPortal } from './user.jsx';
 import './styles.css';
 
 const navigation = [
@@ -16,7 +17,7 @@ let applicationSettings = {
 };
 
 const pageDetails = {
-  users: { title: 'User management', subtitle: 'Review account status, wallet figures, configured stakes, and bot settings.', resource: 'users', columns: [['accountId', 'Account ID'], ['name', 'Name'], ['email', 'Email'], ['walletBalanceMinor', 'Wallet'], ['configuredStakeMinor', 'Stake'], ['botEnabled', 'Bot'], ['status', 'Account'], ['lastSeenAt', 'Last active']] },
+  users: { title: 'User management', subtitle: 'Review account status, wallet figures, configured stakes, and bot settings.', resource: 'users', columns: [['accountId', 'Account ID'], ['name', 'Name'], ['email', 'Email'], ['emailVerified', 'Email verified'], ['walletBalanceMinor', 'Wallet'], ['configuredStakeMinor', 'Stake'], ['botEnabled', 'Bot status'], ['status', 'Account'], ['lastSeenAt', 'Last active']] },
   employees: { title: 'Employee access', subtitle: 'Provision employee administrator accounts and assign access roles.', resource: 'employees', columns: [['username', 'Username'], ['role', 'Role'], ['createdAt', 'Created'], ['lastLoginAt', 'Last sign-in']] },
   deposits: { title: 'Deposits', subtitle: 'Deposit records. Payment verification and crediting are not enabled.', resource: 'deposits', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
   withdrawals: { title: 'Withdrawals', subtitle: 'Withdrawal records. Payout processing is not enabled.', resource: 'withdrawals', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
@@ -111,6 +112,7 @@ function SignIn({ onSignIn }) {
         </form>
         <p className="login-footnote">Employee admin accounts are provisioned by a super-admin. Public registration is unavailable.</p>
         <div className="operations-note"><span className="status-dot status-dot-amber"></span> Trading and payment operations are disabled</div>
+        <a className="portal-admin-link" href="/user">Looking for your account? Visit the user portal</a>
       </section>
     </main>
   );
@@ -188,7 +190,7 @@ function Overview({ metrics, loading, error, onRetry }) {
       <div className="notice notice-info"><span className="notice-icon">i</span><span><strong>Operations are restricted.</strong> This installation has no active payment processor or trading integration. Financial activity shown here is not live-verified.</span></div>
       <section className="metrics-grid" aria-label="Platform metrics">
         <Metric label="Total users" value={data.totalUsers ?? '—'} detail="Registered user accounts" icon="♙" tone="blue" />
-        <Metric label="Active bots" value={data.activeBots ?? '—'} detail="Live users with bots enabled" icon="◉" tone="violet" />
+        <Metric label="Bot opt-ins" value={data.activeBots ?? '—'} detail="Saved preference; no trades execute" icon="◉" tone="violet" />
         <Metric label="Admin Deriv balance" value={data.derivConnected ? money(data.adminDerivBalanceMinor) : 'Not connected'} detail="Verified account balance" icon="⌁" tone="cyan" />
         <Metric label="User wallet liabilities" value={balanceSummary(data.walletLiabilitiesByCurrency, '—')} detail="Live user wallets only" icon="▤" tone="green" />
         <Metric label="Daily profit / loss" value={balanceSummary(data.dailyProfitLossByCurrency)} detail={data.verifiedTradesToday ? 'Deriv-confirmed trades today' : 'No verified live trades today'} icon="↗" tone="amber" />
@@ -545,7 +547,8 @@ function CellValue({ value, record, field }) {
   if (value === null || value === undefined || value === '') return <span className="muted">—</span>;
   if (field === 'amountMinor' || field.endsWith('BalanceMinor') || field.endsWith('StakeMinor') || field === 'payoutMinor' || field === 'profitLossMinor') return money(value, record.currency || 'USD');
   if (field === 'createdAt' || field === 'approvedAt' || field === 'executedAt' || field === 'updatedAt' || field === 'lastSeenAt') return dateLabel(value);
-  if (field === 'botEnabled') return <span className={`status-tag ${value ? 'status-tag-good' : 'status-tag-neutral'}`}>{value ? 'Running' : 'Stopped'}</span>;
+  if (field === 'botEnabled') return <span className={`status-tag ${value ? 'status-tag-warning' : 'status-tag-neutral'}`}>{value ? 'Opted in' : 'Off'}</span>;
+  if (field === 'emailVerified') return <span className={`status-tag ${value ? 'status-tag-good' : 'status-tag-warning'}`}>{value ? 'Verified' : 'Pending'}</span>;
   if (field === 'confirmedByDeriv') return <span className={`status-tag ${value ? 'status-tag-good' : 'status-tag-neutral'}`}>{value ? 'Yes' : 'No'}</span>;
   if (field === 'mode') return <span className="status-tag status-tag-neutral">{value}</span>;
   if (field === 'status' || field === 'severity' || field === 'direction') return <span className={`status-tag ${statusTone(String(value))}`}>{String(value).replaceAll('_', ' ')}</span>;
@@ -714,4 +717,6 @@ function App() {
   return <><SignIn onSignIn={setUser} />{authError && <div className="boot-error" role="alert">{authError}</div>}</>;
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(
+  window.location.pathname.startsWith('/user') ? <UserPortal /> : <App />,
+);

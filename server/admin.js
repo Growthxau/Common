@@ -279,7 +279,7 @@ router.get('/rounds/:roundId/participants', (request, response) => {
 const listQueries = {
   users: `
     SELECT users.id, users.account_id AS accountId, users.display_name AS name,
-      users.email, users.status, users.bot_enabled AS botEnabled,
+      users.email, users.email_verified AS emailVerified, users.status, users.bot_enabled AS botEnabled,
       users.configured_stake_minor AS configuredStakeMinor, users.currency,
       users.created_at AS createdAt,
       users.last_seen_at AS lastSeenAt, wallets.balance_minor AS walletBalanceMinor

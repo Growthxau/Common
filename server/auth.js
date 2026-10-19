@@ -127,4 +127,4 @@ function logout(request, response) {
   return response.status(204).end();
 }
 
-module.exports = { audit, hashPassword, login, logout, requireAdmin, verifyPassword };
+module.exports = { audit, hashPassword, hashToken, login, logout, requireAdmin, verifyPassword };
