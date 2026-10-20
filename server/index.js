@@ -7,6 +7,7 @@ const db = require('./db');
 const adminRouter = require('./admin');
 const { audit, login, logout, requireAdmin } = require('./auth');
 const userModule = require('./user');
+const { getRequestOrigin } = require('./origin');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -42,7 +43,7 @@ app.use('/api', rateLimit({
 
 function requireSameOrigin(request, response, next) {
   const origin = request.get('origin');
-  const expectedOrigin = process.env.APP_ORIGIN || `${request.protocol}://${request.get('host')}`;
+  const expectedOrigin = getRequestOrigin(request);
   try {
     if (origin && new URL(origin).origin === new URL(expectedOrigin).origin) return next();
   } catch {
@@ -92,7 +93,7 @@ app.use('/api/auth/login', loginLimiter, requireSameOriginForChanges);
 app.use('/api/auth/logout', requireSameOriginForChanges);
 app.use('/api/admin', requireSameOriginForChanges);
 app.use('/api/user', requireSameOriginForChanges);
-app.use(express.json({ limit: '12kb', strict: true }));
+app.use(express.json({ limit: '2mb', strict: true }));
 app.use(cookieParser());
 
 app.get('/api/health', (request, response) => response.json({
@@ -100,6 +101,19 @@ app.get('/api/health', (request, response) => response.json({
   tradingEnabled: false,
   paymentsEnabled: false,
 }));
+app.get('/api/app-settings', (request, response, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT key, value_json FROM app_settings
+      WHERE key IN ('organizationName', 'appLogo')
+    `).all();
+    const settings = { organizationName: 'G-Squad', appLogo: '' };
+    for (const row of rows) settings[row.key] = JSON.parse(row.value_json);
+    return response.json({ settings });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 app.post('/api/auth/login', login);
 app.get('/api/auth/me', requireAdmin, (request, response) => {

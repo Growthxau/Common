@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { getPublicOrigin } = require('./origin');
 
 function smtpConfiguration() {
   const host = process.env.SMTP_HOST?.trim();
@@ -32,18 +33,8 @@ async function sendAccountLink({ request, email, name, token, type }) {
   const configuration = smtpConfiguration();
   if (!configuration) return false;
 
-  const configuredOrigin = process.env.APP_ORIGIN;
-  if (process.env.NODE_ENV === 'production' && !configuredOrigin) {
-    throw new Error('APP_ORIGIN must be configured before sending account links in production.');
-  }
-  const origin = configuredOrigin || `${request.protocol}://${request.get('host')}`;
-  const parsedOrigin = new URL(origin);
-  if (parsedOrigin.username || parsedOrigin.password || parsedOrigin.pathname !== '/'
-      || parsedOrigin.search || parsedOrigin.hash
-      || (process.env.NODE_ENV === 'production' && parsedOrigin.protocol !== 'https:')) {
-    throw new Error('APP_ORIGIN must be a plain HTTPS origin in production.');
-  }
-  const url = new URL('/user', origin);
+  const origin = getPublicOrigin(request);
+  const url = new URL('/', origin);
   url.searchParams.set(type === 'verify_email' ? 'verify' : 'reset', token);
   const verification = type === 'verify_email';
   const subject = verification ? 'Verify your G-Squad email' : 'Reset your G-Squad password';

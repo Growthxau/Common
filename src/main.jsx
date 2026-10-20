@@ -14,10 +14,11 @@ let applicationSettings = {
   organizationName: 'G-Squad',
   defaultCurrency: 'USD',
   timezone: 'UTC',
+  appLogo: '',
 };
 
 const pageDetails = {
-  users: { title: 'User management', subtitle: 'Review account status, wallet figures, configured stakes, and bot settings.', resource: 'users', columns: [['accountId', 'Account ID'], ['name', 'Name'], ['email', 'Email'], ['emailVerified', 'Email verified'], ['walletBalanceMinor', 'Wallet'], ['configuredStakeMinor', 'Stake'], ['botEnabled', 'Bot status'], ['status', 'Account'], ['lastSeenAt', 'Last active']] },
+  users: { title: 'User management', subtitle: 'Review account status, wallet figures, configured stakes, and member participation preferences.', resource: 'users', columns: [['accountId', 'Account ID'], ['name', 'Name'], ['email', 'Email'], ['emailVerified', 'Email verified'], ['walletBalanceMinor', 'Wallet'], ['configuredStakeMinor', 'Configured stake'], ['botEnabled', 'Participation'], ['status', 'Account'], ['lastSeenAt', 'Last active']] },
   employees: { title: 'Employee access', subtitle: 'Provision employee administrator accounts and assign access roles.', resource: 'employees', columns: [['username', 'Username'], ['role', 'Role'], ['createdAt', 'Created'], ['lastLoginAt', 'Last sign-in']] },
   deposits: { title: 'Deposits', subtitle: 'Deposit records. Payment verification and crediting are not enabled.', resource: 'deposits', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
   withdrawals: { title: 'Withdrawals', subtitle: 'Withdrawal records. Payout processing is not enabled.', resource: 'withdrawals', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
@@ -112,14 +113,26 @@ function SignIn({ onSignIn }) {
         </form>
         <p className="login-footnote">Employee admin accounts are provisioned by a super-admin. Public registration is unavailable.</p>
         <div className="operations-note"><span className="status-dot status-dot-amber"></span> Trading and payment operations are disabled</div>
-        <a className="portal-admin-link" href="/user">Looking for your account? Visit the user portal</a>
+        <a className="portal-admin-link" href="/">Looking for your account? Visit the user portal</a>
       </section>
     </main>
   );
 }
 
+function SplashScreen({ logo }) {
+  return (
+    <main className="app-splash-screen" aria-live="polite" aria-label="Loading splash screen">
+      {logo
+        ? <img className="app-splash-logo app-splash-logo-image" src={logo} alt="" aria-hidden="true" />
+        : <div className="app-splash-logo" aria-hidden="true">G</div>}
+    </main>
+  );
+}
+
 function Brand() {
-  return <div className="brand"><span className="brand-symbol">G</span><span><strong>{applicationSettings.organizationName}</strong><small>ADMIN CONSOLE</small></span></div>;
+  return <div className="brand">{applicationSettings.appLogo
+    ? <img className="brand-image" src={applicationSettings.appLogo} alt="" />
+    : <span className="brand-symbol">G</span>}<span><strong>{applicationSettings.organizationName}</strong><small>ADMIN CONSOLE</small></span></div>;
 }
 
 function Sidebar({ activePage, onNavigate, open, onClose, user }) {
@@ -236,7 +249,7 @@ function ConnectionPage({ data, loading, error, onRetry }) {
     <div className="page-stack">
       <PageHeading title="Deriv connection" subtitle="Credential readiness and verified account status. Secret values are never sent to the browser." />
       <div className="surface-card detail-card">
-        <div className="section-heading"><div><h2>Backend credentials</h2><p>Configuration is read only from server environment variables.</p></div><span className="status-tag status-tag-warning">{settings.derivConnected ? 'CONNECTED' : 'NOT CONNECTED'}</span></div>
+        <div className="section-heading"><div><h2>Backend credentials</h2><p>Manage credentials in Application settings; secrets stay server-side.</p></div><span className="status-tag status-tag-warning">{settings.derivConnected ? 'CONNECTED' : 'NOT CONNECTED'}</span></div>
         <StatusLine label="DERIV_PAT configured" value={settings.derivPatConfigured ? 'Set on server' : 'Not set'} good={settings.derivPatConfigured} />
         <StatusLine label="DERIV_APP_ID configured" value={settings.derivAppIdConfigured ? 'Set on server' : 'Not set'} good={settings.derivAppIdConfigured} />
         <StatusLine label="Verified account currency" value="Unavailable" />
@@ -346,7 +359,7 @@ function RiskSettingsEditor({ initialSettings }) {
   );
 }
 
-function ApplicationSettingsPage({ data, loading, error, onRetry }) {
+function ApplicationSettingsPage({ data, loading, error, onRetry, onSettingsChanged }) {
   useEffect(() => {
     if (!data?.settings) return;
     applicationSettings = { ...applicationSettings, ...data.settings };
@@ -357,9 +370,10 @@ function ApplicationSettingsPage({ data, loading, error, onRetry }) {
   return (
     <div className="page-stack">
       <PageHeading title="Application settings" subtitle="Configure platform identity, support contact, locale, and operational defaults." />
-      <ApplicationSettingsEditor settings={data?.settings} />
+      <ApplicationSettingsEditor settings={data?.settings} onSettingsChanged={onSettingsChanged} />
       <section className="surface-card detail-card">
-        <div className="section-heading"><div><h2>Integrations</h2><p>Credentials remain in server environment variables and are never returned to the browser.</p></div><span className="status-tag status-tag-warning">NOT CONNECTED</span></div>
+        <div className="section-heading"><div><h2>Deriv credentials</h2><p>App ID is stored as configuration; the PAT is encrypted on the server and never returned.</p></div><span className="status-tag status-tag-warning">NOT CONNECTED</span></div>
+        <DerivCredentialsEditor status={data} />
         <StatusLine label="Deriv credentials" value={data?.derivPatConfigured && data?.derivAppIdConfigured ? 'Configured on server; not connected' : 'Not configured'} />
         <StatusLine label="Trading execution" value="Disabled" />
         <StatusLine label="Payment processing" value="Disabled" />
@@ -369,7 +383,49 @@ function ApplicationSettingsPage({ data, loading, error, onRetry }) {
   );
 }
 
-function ApplicationSettingsEditor({ settings }) {
+function DerivCredentialsEditor({ status }) {
+  const [appId, setAppId] = useState(status?.derivAppId || '');
+  const [pat, setPat] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => setAppId(status?.derivAppId || ''), [status?.derivAppId]);
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setFeedback('');
+    setError('');
+    try {
+      const result = await api('/api/admin/deriv-credentials', {
+        method: 'PUT',
+        body: JSON.stringify({ derivCredentials: { appId, pat } }),
+      });
+      setAppId(result.derivAppId);
+      setPat('');
+      setFeedback('Deriv credentials saved. Connection remains unverified and trading stays disabled.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="config-form config-form-compact" onSubmit={submit}>
+      <div className="form-grid">
+        <label className="form-field"><span>Deriv App ID</span><input inputMode="numeric" pattern="[0-9]{1,20}" maxLength="20" required value={appId} onChange={(event) => setAppId(event.target.value)} /></label>
+        <label className="form-field"><span>Replace Deriv PAT</span><input type="password" autoComplete="new-password" maxLength="512" value={pat} onChange={(event) => setPat(event.target.value)} placeholder={status?.derivPatConfigured ? 'Leave blank to keep current PAT' : 'Enter PAT'} /></label>
+      </div>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      {feedback && <p className="form-feedback" role="status">{feedback}</p>}
+      <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save Deriv credentials'}</button></div>
+    </form>
+  );
+}
+
+function ApplicationSettingsEditor({ settings, onSettingsChanged }) {
   const [values, setValues] = useState(settings);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
@@ -377,6 +433,28 @@ function ApplicationSettingsEditor({ settings }) {
 
   useEffect(() => setValues(settings), [settings]);
   if (!values) return null;
+
+  function selectLogo(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setError('');
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 1024 * 1024) {
+      setError('Choose a PNG, JPEG, or WebP image no larger than 1 MB.');
+      event.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        setError('The selected logo could not be read.');
+        return;
+      }
+      setValues((current) => ({ ...current, appLogo: reader.result }));
+    };
+    reader.onerror = () => setError('The selected logo could not be read.');
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -391,6 +469,7 @@ function ApplicationSettingsEditor({ settings }) {
       applicationSettings = { ...applicationSettings, ...result.settings };
       document.title = `${applicationSettings.organizationName} | Admin Console`;
       setValues(result.settings);
+      onSettingsChanged();
       setFeedback('Application settings saved.');
     } catch (requestError) {
       setError(requestError.message);
@@ -407,6 +486,13 @@ function ApplicationSettingsEditor({ settings }) {
         <label className="form-field"><span>Support email</span><input type="email" maxLength="254" value={values.supportEmail} onChange={(event) => setValues({ ...values, supportEmail: event.target.value })} placeholder="support@example.com" /></label>
         <label className="form-field"><span>Default currency (ISO 4217)</span><input minLength="3" maxLength="3" pattern="[A-Za-z]{3}" required value={values.defaultCurrency} onChange={(event) => setValues({ ...values, defaultCurrency: event.target.value.toUpperCase() })} /></label>
         <label className="form-field"><span>Timezone</span><input maxLength="100" required value={values.timezone} onChange={(event) => setValues({ ...values, timezone: event.target.value })} placeholder="UTC" /></label>
+      </div>
+      <div className="app-logo-field">
+        <label className="form-field"><span>Application logo (PNG, JPEG, or WebP; max 1 MB)</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={selectLogo} /></label>
+        <div className="app-logo-preview" aria-label="Application logo preview">
+          {values.appLogo ? <img src={values.appLogo} alt="Application logo preview" /> : <span>G</span>}
+          {values.appLogo && <button className="button button-subtle" type="button" onClick={() => setValues({ ...values, appLogo: '' })}>Remove logo</button>}
+        </div>
       </div>
       {error && <p className="inline-error" role="alert">{error}</p>}
       {feedback && <p className="form-feedback" role="status">{feedback}</p>}
@@ -570,11 +656,11 @@ function ErrorPanel({ message, onRetry }) {
   return <div className="surface-card state-panel error-panel"><span>{message}</span><button className="button button-subtle" type="button" onClick={onRetry}>Try again</button></div>;
 }
 
-function PageContent({ page, overview, pageData, pageLoading, pageError, onRetry, user, roundProps }) {
+function PageContent({ page, overview, pageData, pageLoading, pageError, onRetry, user, roundProps, onSettingsChanged }) {
   if (page === 'overview') return <Overview metrics={overview.data?.metrics} loading={overview.loading} error={overview.error} onRetry={onRetry} />;
   if (page === 'connection') return <ConnectionPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'risk') return <RiskPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
-  if (page === 'settings') return <ApplicationSettingsPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
+  if (page === 'settings') return <ApplicationSettingsPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} onSettingsChanged={onSettingsChanged} />;
   if (page === 'employees') return <EmployeesPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'security') return <SecurityPage user={user} data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'engine') return <EnginePage metrics={overview.data?.metrics} data={pageData} loading={pageLoading || overview.loading} error={pageError || overview.error} onRetry={onRetry} />;
@@ -586,12 +672,14 @@ function Dashboard({ user, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [overview, setOverview] = useState({ loading: true, error: '' });
   const [pageData, setPageData] = useState(null);
+  const [pageDataResource, setPageDataResource] = useState(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState('');
   const [selectedRound, setSelectedRound] = useState(null);
   const [roundDetails, setRoundDetails] = useState(null);
   const [roundLoading, setRoundLoading] = useState(false);
   const [roundError, setRoundError] = useState('');
+  const [, setBrandingVersion] = useState(0);
   const pageRequestId = useRef(0);
   const roundRequestId = useRef(0);
   const pageResource = activePage === 'connection' || activePage === 'risk' ? 'settings'
@@ -601,7 +689,7 @@ function Dashboard({ user, onLogout }) {
         : pageDetails[activePage]?.resource;
 
   async function loadOverview() {
-    setOverview((current) => ({ ...current, loading: true, error: '' }));
+    setOverview((current) => ({ ...current, loading: !current.data, error: '' }));
     try {
       const data = await api('/api/admin/overview');
       setOverview({ data, loading: false, error: '' });
@@ -613,11 +701,14 @@ function Dashboard({ user, onLogout }) {
   async function loadPage() {
     if (!pageResource) return;
     const requestId = ++pageRequestId.current;
-    setPageLoading(true);
+    setPageLoading(pageDataResource !== pageResource);
     setPageError('');
     try {
       const data = await api(`/api/admin/${pageResource}`);
-      if (requestId === pageRequestId.current) setPageData(data);
+      if (requestId === pageRequestId.current) {
+        setPageData(data);
+        setPageDataResource(pageResource);
+      }
     } catch (error) {
       if (requestId === pageRequestId.current) setPageError(error.message);
     } finally {
@@ -673,6 +764,7 @@ function Dashboard({ user, onLogout }) {
             pageError={pageError}
             onRetry={retryPage}
             user={user}
+            onSettingsChanged={() => setBrandingVersion((version) => version + 1)}
             roundProps={{
               onSelectRound: loadRoundParticipants,
               selectedRound,
@@ -692,6 +784,13 @@ function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState('');
+  const [showSplash, setShowSplash] = useState(true);
+  const [branding, setBranding] = useState(applicationSettings);
+
+  useEffect(() => {
+    const splashTimer = window.setTimeout(() => setShowSplash(false), 8000);
+    return () => window.clearTimeout(splashTimer);
+  }, []);
 
   useEffect(() => {
     api('/api/auth/me')
@@ -700,6 +799,16 @@ function App() {
         if (error.status !== 401) setAuthError(error.message);
       })
       .finally(() => setAuthLoading(false));
+  }, []);
+
+  useEffect(() => {
+    api('/api/app-settings')
+      .then(({ settings }) => {
+        applicationSettings = { ...applicationSettings, ...settings };
+        setBranding(applicationSettings);
+        document.title = `${applicationSettings.organizationName} | Admin Console`;
+      })
+      .catch((error) => setAuthError(error.message));
   }, []);
 
   async function signOut() {
@@ -712,11 +821,12 @@ function App() {
     }
   }
 
+  if (showSplash) return <SplashScreen logo={branding.appLogo} />;
   if (authLoading) return <main className="boot-screen"><span className="spinner" aria-hidden="true" /><span>Loading G-Squad…</span></main>;
   if (user) return <>{authError && <div className="boot-error" role="alert">{authError}</div>}<Dashboard user={user} onLogout={signOut} /></>;
   return <><SignIn onSignIn={setUser} />{authError && <div className="boot-error" role="alert">{authError}</div>}</>;
 }
 
 createRoot(document.getElementById('root')).render(
-  window.location.pathname.startsWith('/user') ? <UserPortal /> : <App />,
+  window.location.pathname.startsWith('/admin') ? <App /> : <UserPortal />,
 );

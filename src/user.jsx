@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { isMobileOnlyDevice } from './device.js';
 
 async function userApi(path, options = {}) {
   const response = await fetch(path, {
@@ -36,11 +37,84 @@ function formatDate(value) {
     : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-function PortalBrand() {
-  return <a className="portal-brand" href="/user"><span className="portal-brand-mark">G</span><span><strong>G-Squad</strong><small>MEMBER PORTAL</small></span></a>;
+function SplashScreen({ logo }) {
+  return (
+    <main className="app-splash-screen" aria-live="polite" aria-label="Loading splash screen">
+      {logo
+        ? <img className="app-splash-logo app-splash-logo-image" src={logo} alt="" aria-hidden="true" />
+        : <div className="app-splash-logo" aria-hidden="true">G</div>}
+    </main>
+  );
 }
 
-function UserAuth({ onAuthenticate, initialMode = 'welcome', token = '' }) {
+async function playAdvancedAlertSound() {
+  if (typeof window === 'undefined') return;
+  if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+    try {
+      navigator.vibrate([180, 80, 220, 80, 260]);
+    } catch (error) {
+      console.error('Could not trigger notification vibration:', error);
+    }
+  }
+  const AudioConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioConstructor) return;
+
+  let context;
+  try {
+    context = new AudioConstructor();
+    const sequence = [880, 1120, 1360];
+    const masterGain = context.createGain();
+    masterGain.gain.value = 0.7;
+    masterGain.connect(context.destination);
+    if (context.state === 'suspended') await context.resume();
+    sequence.forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const startAt = context.currentTime + index * 0.18;
+
+      oscillator.type = index === 0 ? 'triangle' : 'sawtooth';
+      oscillator.frequency.setValueAtTime(frequency, startAt);
+      gain.gain.setValueAtTime(0.0001, startAt);
+      gain.gain.linearRampToValueAtTime(0.55, startAt + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.34);
+
+      oscillator.connect(gain);
+      gain.connect(masterGain);
+      oscillator.start(startAt);
+      oscillator.stop(startAt + 0.36);
+    });
+
+  } catch (error) {
+    console.error('Could not play the notification alert sound:', error);
+  } finally {
+    if (context) {
+      window.setTimeout(() => {
+        context.close().catch((error) => console.error('Could not close the notification audio context:', error));
+      }, 1800);
+    }
+  }
+}
+
+function NotificationAlert({ title, body, onDismiss }) {
+  return (
+    <aside className="portal-alert-toast" role="status" aria-live="polite">
+      <div className="portal-alert-toast-mark" aria-hidden="true">!</div>
+      <div className="portal-alert-toast-copy">
+        <strong>{title}</strong>
+        <span>{body}</span>
+      </div>
+      <button type="button" className="portal-alert-toast-close" onClick={onDismiss} aria-label="Dismiss notification alert">×</button>
+    </aside>
+  );
+}
+
+function PortalBrand({ branding }) {
+  return <a className="portal-brand" href="/">{branding.appLogo
+    ? <img className="portal-brand-image" src={branding.appLogo} alt="" />
+    : <span className="portal-brand-mark">G</span>}<span><strong>{branding.organizationName}</strong><small>MEMBER PORTAL</small></span></a>;
+}
+
+function UserAuth({ branding, onAuthenticate, initialMode = 'welcome', token = '' }) {
   const [mode, setMode] = useState(initialMode);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -62,7 +136,7 @@ function UserAuth({ onAuthenticate, initialMode = 'welcome', token = '' }) {
         const result = await userApi('/api/user/verify-email', { method: 'POST', body: JSON.stringify({ token }) });
         setFeedback(result.message);
         setMode('login');
-        window.history.replaceState({}, '', '/user');
+        window.history.replaceState({}, '', '/');
         return;
       }
       if (mode === 'reset') {
@@ -74,7 +148,7 @@ function UserAuth({ onAuthenticate, initialMode = 'welcome', token = '' }) {
         setPassword('');
         setConfirmPassword('');
         setMode('login');
-        window.history.replaceState({}, '', '/user');
+        window.history.replaceState({}, '', '/');
         return;
       }
       if (mode === 'forgot') {
@@ -109,30 +183,29 @@ function UserAuth({ onAuthenticate, initialMode = 'welcome', token = '' }) {
   return (
     <main className="portal-auth-layout">
       <section className="portal-auth-aside">
-        <PortalBrand />
+        <PortalBrand branding={branding} />
         <div className="portal-hero-copy">
-          <span className="portal-kicker">YOUR ACCOUNT, AT A GLANCE</span>
-          <h1>A clearer view of your G-Squad account.</h1>
-          <p>Manage your account preferences, follow wallet activity and get help from the support team.</p>
-          <div className="portal-hero-note"><span className="portal-status-dot" /> Email verification required · Trading and payments disabled</div>
+          <span className="portal-kicker">WELCOME TO {branding.organizationName.toUpperCase()}</span>
+          <h1>Your account, all in one place.</h1>
+          <p>Sign in to keep up with your account, manage your preferences, and reach our support team.</p>
         </div>
-        <div className="portal-aside-footer">Secure account access <span>·</span> Private by design</div>
+        <div className="portal-aside-footer">A simpler way to manage your account</div>
       </section>
       <section className="portal-auth-main">
         <div className="portal-auth-card">
-          {mode === 'welcome' && <div className="portal-welcome"><p className="portal-kicker">MEMBER ACCESS</p><h2>Welcome to G-Squad</h2><p className="portal-auth-subtitle">Sign in to review your account or create a new member account.</p><button className="portal-primary-button" onClick={() => setMode('login')}>Log in</button><button className="portal-secondary-button portal-welcome-register" onClick={() => setMode('register')}>Create an account</button></div>}
-          {mode === 'sent' && <div className="portal-message-state"><p className="portal-kicker">CHECK YOUR EMAIL</p><h2>Verify your address</h2><p className="portal-auth-subtitle">{feedback}</p><p className="portal-auth-subtitle">The verification link expires after one hour. Check your spam folder if it does not arrive.</p>{error && <p className="portal-error" role="alert">{error}</p>}<button className="portal-secondary-button" onClick={async () => { setBusy(true); setError(''); try { const result = await userApi('/api/user/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }); setFeedback(result.message); } catch (requestError) { setError(requestError.message); } finally { setBusy(false); } }} disabled={busy}>{busy ? 'Sending…' : 'Resend verification email'}</button></div>}
-          {mode === 'forgot-sent' && <div className="portal-message-state"><p className="portal-kicker">PASSWORD RECOVERY</p><h2>Check your inbox</h2><p className="portal-auth-subtitle">{feedback}</p>{error && <p className="portal-error" role="alert">{error}</p>}<button className="portal-text-button" onClick={() => { setMode('login'); setError(''); }}>Back to sign in</button></div>}
+          {mode === 'welcome' && <div className="portal-welcome"><p className="portal-kicker">MEMBER PORTAL</p><h2>Welcome to {branding.organizationName}</h2><p className="portal-auth-subtitle">Sign in to your account or create one to get started.</p><button className="portal-primary-button" onClick={() => setMode('login')}>Sign in</button><button className="portal-secondary-button portal-welcome-register" onClick={() => setMode('register')}>Create an account</button></div>}
+          {mode === 'sent' && <div className="portal-message-state"><div className="portal-message-icon" aria-hidden="true">✉</div><p className="portal-kicker">ONE LAST STEP</p><h2>Check your email</h2><p className="portal-auth-subtitle">{feedback}</p><p className="portal-auth-subtitle">The verification link is valid for one hour. If you don't see it, check your spam folder.</p>{error && <p className="portal-error" role="alert">{error}</p>}<button className="portal-secondary-button" onClick={async () => { setBusy(true); setError(''); try { const result = await userApi('/api/user/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }); setFeedback(result.message); } catch (requestError) { setError(requestError.message); } finally { setBusy(false); } }} disabled={busy}>{busy ? 'Sending…' : 'Resend verification email'}</button></div>}
+          {mode === 'forgot-sent' && <div className="portal-message-state"><div className="portal-message-icon" aria-hidden="true">✉</div><p className="portal-kicker">PASSWORD RECOVERY</p><h2>Check your inbox</h2><p className="portal-auth-subtitle">{feedback}</p>{error && <p className="portal-error" role="alert">{error}</p>}<button className="portal-text-button" onClick={() => { setMode('login'); setError(''); }}>Back to sign in</button></div>}
           {!['welcome', 'sent', 'forgot-sent'].includes(mode) && <>
             <p className="portal-kicker">{mode === 'register' ? 'CREATE YOUR ACCOUNT' : mode === 'forgot' ? 'PASSWORD RECOVERY' : mode === 'verify' ? 'EMAIL VERIFICATION' : mode === 'reset' ? 'RESET PASSWORD' : 'MEMBER ACCESS'}</p>
-            <h2>{mode === 'register' ? 'Get started' : mode === 'forgot' ? 'Reset your password' : mode === 'verify' ? 'Verify your email' : mode === 'reset' ? 'Choose a new password' : 'Welcome back'}</h2>
+            <h2>{mode === 'register' ? 'Create your account' : mode === 'forgot' ? 'Reset your password' : mode === 'verify' ? 'Verify your email' : mode === 'reset' ? 'Choose a new password' : 'Welcome back'}</h2>
             <p className="portal-auth-subtitle">{mode === 'register' ? 'Create a G-Squad account to access your member dashboard.' : mode === 'forgot' ? 'We will email you a secure reset link if an account matches.' : mode === 'verify' ? 'Confirm your email address to activate your account.' : mode === 'reset' ? 'Use a new password of at least 14 characters.' : 'Sign in to review your account and wallet activity.'}</p>
             <form className="portal-form" onSubmit={submit}>
               {mode === 'register' && <label className="portal-field"><span>Full name</span><input autoComplete="name" maxLength="80" minLength="2" required value={name} onChange={(event) => setName(event.target.value)} /></label>}
               {['register', 'login', 'forgot'].includes(mode) && <label className="portal-field"><span>Email address</span><input type="email" autoComplete="email" maxLength="254" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>}
               {['register', 'login', 'reset'].includes(mode) && <label className="portal-field"><span>{mode === 'reset' ? 'New password' : 'Password'}</span><input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? 1 : 14} maxLength="1024" required value={password} onChange={(event) => setPassword(event.target.value)} />{mode !== 'login' && <small>Use at least 14 characters.</small>}</label>}
               {['register', 'reset'].includes(mode) && <label className="portal-field"><span>Confirm password</span><input type="password" autoComplete="new-password" minLength="14" maxLength="1024" required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>}
-              {mode === 'register' && <label className="portal-terms"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} required /><span>I accept the <a href="#terms" onClick={(event) => { event.preventDefault(); setFeedback('G-Squad is in development. Trading and payments are unavailable; do not deposit funds.'); }}>terms of service</a> and <a href="#privacy" onClick={(event) => { event.preventDefault(); setFeedback('We use account details to operate this portal. Passwords are hashed and sessions use secure cookies.'); }}>privacy notice</a>.</span></label>}
+              {mode === 'register' && <label className="portal-terms"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} required /><span>I agree to the <a href="#terms" onClick={(event) => { event.preventDefault(); setFeedback('G-Squad is under development. Do not deposit funds. The member portal does not execute trades or process payments.'); }}>Terms of Service</a> and <a href="#privacy" onClick={(event) => { event.preventDefault(); setFeedback('We use your account information to provide this service. Passwords are securely hashed.'); }}>Privacy Notice</a>.</span></label>}
               {error && <p className="portal-error" role="alert">{error}</p>}
               {verificationPending && <button className="portal-text-button" type="button" disabled={busy} onClick={async () => { setBusy(true); setError(''); try { const result = await userApi('/api/user/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }); setFeedback(result.message); setVerificationPending(false); setMode('sent'); } catch (requestError) { setError(requestError.message); } finally { setBusy(false); } }}>Resend verification email</button>}
               {feedback && <p className="portal-success" role="status">{feedback}</p>}
@@ -140,12 +213,16 @@ function UserAuth({ onAuthenticate, initialMode = 'welcome', token = '' }) {
               <button className="portal-primary-button" type="submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'register' ? 'Create account' : mode === 'login' ? 'Sign in securely' : mode === 'verify' ? 'Verify email' : mode === 'forgot' ? 'Send reset link' : 'Update password'}</button>
             </form>
             {mode === 'login' && <p className="portal-switch"><button type="button" onClick={() => { setMode('forgot'); setError(''); setFeedback(''); }}>Forgot password?</button></p>}
-            <p className="portal-switch"><button type="button" onClick={() => { setMode(mode === 'register' ? 'login' : 'welcome'); setError(''); setFeedback(''); }}>{mode === 'register' ? 'Back to sign in' : 'Back'}</button></p>
+            <p className="portal-switch">{mode === 'login'
+              ? <>New here? <button type="button" onClick={() => { setMode('register'); setError(''); setFeedback(''); }}>Create an account</button></>
+              : mode === 'register'
+                ? <>Already have an account? <button type="button" onClick={() => { setMode('login'); setError(''); setFeedback(''); }}>Sign in</button></>
+                : <button type="button" onClick={() => { setMode('login'); setError(''); setFeedback(''); }}>Back to sign in</button>}
+            </p>
           </>}
           <div className="portal-auth-divider" />
-          <a className="portal-admin-link" href="/">Administration sign-in <span aria-hidden="true">↗</span></a>
+          <a className="portal-admin-link" href="/admin">Administration sign-in <span aria-hidden="true">↗</span></a>
         </div>
-        <p className="portal-auth-disclaimer">Accounts start with a zero USD balance. Deposits, withdrawals and trading are unavailable in this build.</p>
       </section>
     </main>
   );
@@ -174,7 +251,7 @@ function OverviewPage({ dashboard, onNavigate }) {
         <PortalMetric label="Total deposited" value={formatMoney(dashboard.walletTotals.depositsMinor, user.currency)} detail="Verified ledger credits" icon="↓" color="violet" />
         <PortalMetric label="Total withdrawn" value={formatMoney(dashboard.walletTotals.withdrawalsMinor, user.currency)} detail="Recorded ledger debits" icon="↑" color="cyan" />
         <PortalMetric label="Realized P/L" value={formatMoney(dashboard.realizedProfitLossMinor, user.currency)} detail="Deriv-confirmed settlements only" icon="↗" color="green" />
-        <PortalMetric label="Bot status" value={dashboard.tradingEnabled && user.botEnabled ? 'Running' : 'Stopped'} detail={dashboard.tradingEnabled ? 'Confirmed by trading service' : 'Trading engine disabled'} icon="◉" color="amber" />
+        <PortalMetric label="Participation preference" value={user.botEnabled ? 'On' : 'Off'} detail="Manual setting; no trades execute" icon="◉" color="amber" />
         <PortalMetric label="Configured stake" value={formatMoney(user.configuredStakeMinor, user.currency)} detail="Saved risk setting" icon="◇" color="blue" />
         <PortalMetric label="Daily loss limit" value={user.maxDailyLossMinor ? formatMoney(user.maxDailyLossMinor, user.currency) : 'Not set'} detail="Your account risk setting" icon="!" color="amber" />
         <PortalMetric label="Daily target" value={user.dailyProfitTargetMinor ? formatMoney(user.dailyProfitTargetMinor, user.currency) : 'Not set'} detail={`${formatMoney(dashboard.dailyProfitLossMinor, user.currency)} realized today`} icon="◎" color="violet" />
@@ -308,24 +385,24 @@ function BotPage({ dashboard, onSaved, onNavigate }) {
 
   return (
     <div className="portal-page-stack">
-      <PortalHeading title="Bot control" description="Manage your personal bot status and view the execution service state." />
-      <div className="portal-alert portal-alert-warm"><span aria-hidden="true">!</span><p><strong>Trading is not enabled on this installation.</strong> Start attempts are rejected until the Deriv connection, approved signals and trading engine are independently enabled. No trade can be placed here.</p></div>
+      <PortalHeading title="Participation" description="Choose whether you want to be included if participation becomes available." />
+      <div className="portal-alert portal-alert-warm"><span aria-hidden="true">!</span><p><strong>This setting does not place a trade or reserve funds.</strong> Trading is currently disabled. Your choice is saved to your account and stays the same when you sign out or close this tab.</p></div>
       <section className="portal-card portal-bot-control">
-        <div className="portal-card-heading"><div><h2>My bot</h2><p>Your account's bot participation status</p></div><span className={`portal-status-tag ${user.botEnabled && dashboard.tradingEnabled ? 'is-live' : ''}`}>{user.botEnabled && dashboard.tradingEnabled ? 'RUNNING' : 'STOPPED'}</span></div>
-        <div className="portal-bot-actions"><button className="portal-primary-button" type="button" disabled={busy || user.botEnabled} onClick={() => controlBot('start')}>{busy ? 'Please wait…' : 'Start bot'}</button><button className="portal-secondary-button" type="button" disabled={busy || !user.botEnabled} onClick={() => controlBot('stop')}>Stop bot</button><button className="portal-secondary-button" type="button" onClick={() => onNavigate('risk')}>Edit risk settings</button></div>
+        <div className="portal-card-heading"><div><h2>My participation preference</h2><p>Only you can change this setting from your account.</p></div><span className={`portal-status-tag ${user.botEnabled ? 'is-live' : ''}`}>{user.botEnabled ? 'OPTED IN' : 'OPTED OUT'}</span></div>
+        <div className="portal-bot-actions"><button className="portal-primary-button" type="button" disabled={busy || user.botEnabled} onClick={() => controlBot('start')}>{busy ? 'Please wait…' : 'Opt in'}</button><button className="portal-secondary-button" type="button" disabled={busy || !user.botEnabled} onClick={() => controlBot('stop')}>Opt out</button><button className="portal-secondary-button" type="button" onClick={() => onNavigate('risk')}>Edit risk settings</button></div>
         {error && <p className="portal-error" role="alert">{error}</p>}
         {feedback && <p className="portal-success" role="status">{feedback}</p>}
         <div className="portal-bot-status-grid">
           <StatusItem label="Deriv connection" value="Not connected" />
           <StatusItem label="Trading engine" value="Disabled" />
           <StatusItem label="Current market" value="Unavailable" />
-          <StatusItem label="Trading round" value={dashboard.committedStakeMinor ? 'Participation committed' : 'No active round'} />
+          <StatusItem label="Your preference" value={user.botEnabled ? 'Opted in' : 'Opted out'} />
           <StatusItem label="Last approved signal" value="Unavailable" />
-          <StatusItem label="Current stake" value={formatMoney(user.configuredStakeMinor, user.currency)} />
+          <StatusItem label="Configured stake" value={formatMoney(user.configuredStakeMinor, user.currency)} />
           <StatusItem label="Daily realized P/L" value={formatMoney(dashboard.dailyProfitLossMinor, user.currency)} />
           <StatusItem label="Risk limits" value={dashboard.riskLimitReached ? 'Reached — participation blocked' : 'Not reached'} />
         </div>
-        <p className="portal-page-note">Bot start/stop requests are sent to the backend. The engine remains authoritative: a saved setting is never shown as a running bot unless the service confirms it.</p>
+        <p className="portal-page-note">Your preference is stored with your account. Signing in, being online, or closing your browser does not change it. Trading remains disabled.</p>
       </section>
     </div>
   );
@@ -583,12 +660,38 @@ function UserPortalApp() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
+  const [notificationAlert, setNotificationAlert] = useState(null);
+  const [branding, setBranding] = useState({ organizationName: 'G-Squad', appLogo: '' });
+  const knownNotificationIds = useRef(null);
+  const dashboardRequestId = useRef(0);
+  const dashboardRequestInFlight = useRef(false);
   const query = new URLSearchParams(window.location.search);
   const verificationToken = query.get('verify') || '';
   const resetToken = query.get('reset') || '';
 
   useEffect(() => {
-    document.title = 'G-Squad | Member Portal';
+    const splashTimer = window.setTimeout(() => setShowSplash(false), 8000);
+    return () => window.clearTimeout(splashTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!showSplash && !isMobileOnlyDevice()) {
+      document.title = `${branding.organizationName} | Mobile only`;
+    }
+  }, [showSplash, branding.organizationName]);
+
+  useEffect(() => {
+    document.title = `${branding.organizationName} | Member Portal`;
+  }, [branding.organizationName]);
+
+  useEffect(() => {
+    userApi('/api/app-settings')
+      .then(({ settings }) => setBranding((current) => ({ ...current, ...settings })))
+      .catch((requestError) => setError(requestError.message));
+  }, []);
+
+  useEffect(() => {
     userApi('/api/user/me')
       .then((result) => setUser(result.user))
       .catch((requestError) => {
@@ -597,22 +700,60 @@ function UserPortalApp() {
       .finally(() => setAuthLoading(false));
   }, []);
 
-  async function loadDashboard() {
-    setLoading(true);
+  useEffect(() => {
+    if (!dashboard?.notifications?.length) return;
+    const notifications = dashboard.notifications;
+    const knownIds = knownNotificationIds.current;
+    const newlyReceived = notifications.filter((notification) =>
+      !notification.readAt && (!knownIds || !knownIds.has(notification.id)));
+    const receivedIds = knownIds || new Set();
+    for (const notification of notifications) receivedIds.add(notification.id);
+    knownNotificationIds.current = receivedIds;
+    if (newlyReceived.length) {
+      const latest = newlyReceived[0];
+      setNotificationAlert({ title: latest.title, body: latest.message });
+      void playAdvancedAlertSound();
+    }
+  }, [dashboard?.notifications]);
+
+  async function loadDashboard({ quiet = false } = {}) {
+    if (dashboardRequestInFlight.current) return;
+    dashboardRequestInFlight.current = true;
+    const requestId = ++dashboardRequestId.current;
+    if (!quiet && !dashboard) setLoading(true);
     setError('');
     try {
       const result = await userApi('/api/user/dashboard');
-      setDashboard(result);
-      setUser(result.user);
+      if (requestId === dashboardRequestId.current) {
+        setDashboard(result);
+        setUser(result.user);
+      }
     } catch (requestError) {
-      setError(requestError.message);
+      if (requestId === dashboardRequestId.current) setError(requestError.message);
     } finally {
-      setLoading(false);
+      if (requestId === dashboardRequestId.current) {
+        setLoading(false);
+        dashboardRequestInFlight.current = false;
+      }
     }
   }
 
   useEffect(() => {
-    if (user) loadDashboard();
+    if (!user) return undefined;
+    void loadDashboard();
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void loadDashboard({ quiet: true });
+    }, 30_000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void loadDashboard({ quiet: true });
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.clearInterval(pollTimer);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      dashboardRequestId.current += 1;
+      dashboardRequestInFlight.current = false;
+    };
   }, [user?.id]);
 
   async function signOut() {
@@ -620,14 +761,29 @@ function UserPortalApp() {
       await userApi('/api/user/logout', { method: 'POST' });
       setDashboard(null);
       setUser(null);
+      knownNotificationIds.current = null;
       setError('');
     } catch (requestError) {
       setError(requestError.message);
     }
   }
 
+  if (showSplash) return <SplashScreen logo={branding.appLogo} />;
+  if (!isMobileOnlyDevice()) {
+    return (
+      <main className="mobile-only-screen" role="alert">
+        <div className="mobile-only-panel">
+          {branding.appLogo
+            ? <img className="mobile-only-logo mobile-only-logo-image" src={branding.appLogo} alt="" aria-hidden="true" />
+            : <span className="mobile-only-logo">G</span>}
+          <h1>Mobile app only</h1>
+          <p>This member portal is available only on mobile devices. Please open it on a phone to continue.</p>
+        </div>
+      </main>
+    );
+  }
   if (authLoading) return <main className="portal-loading"><span className="portal-spinner" /><span>Loading your account…</span></main>;
-  if (!user) return <><UserAuth initialMode={verificationToken ? 'verify' : resetToken ? 'reset' : 'welcome'} token={verificationToken || resetToken} onAuthenticate={(account) => { setError(''); setUser(account); }} />{error && <div className="portal-global-error" role="alert">{error}</div>}</>;
+  if (!user) return <><UserAuth branding={branding} initialMode={verificationToken ? 'verify' : resetToken ? 'reset' : 'welcome'} token={verificationToken || resetToken} onAuthenticate={(account) => { setError(''); setUser(account); }} />{error && <div className="portal-global-error" role="alert">{error}</div>}</>;
 
   const navigation = [
     { id: 'overview', icon: '▦', label: 'Dashboard' },
@@ -641,7 +797,7 @@ function UserPortalApp() {
   return (
     <div className="portal-shell">
       <aside className={`portal-sidebar${menuOpen ? ' is-open' : ''}`}>
-        <PortalBrand />
+        <PortalBrand branding={branding} />
         <div className="portal-nav-label">YOUR ACCOUNT</div>
         <nav className="portal-navigation" aria-label="Account navigation">
           {navigation.map((item) => <button key={item.id} className={`portal-nav-item${page === item.id ? ' is-active' : ''}`} onClick={() => { setPage(item.id); setMenuOpen(false); }}><span aria-hidden="true">{item.icon}</span>{item.label}</button>)}
@@ -655,10 +811,17 @@ function UserPortalApp() {
       <div className="portal-main">
         <header className="portal-topbar">
           <button className="portal-menu-toggle" aria-label="Open navigation" onClick={() => setMenuOpen(true)}>☰</button>
-          <div className="portal-breadcrumb"><span>G-Squad</span><span>/</span><strong>{titles[page]}</strong></div>
+          <div className="portal-breadcrumb"><span>{branding.organizationName}</span><span>/</span><strong>{titles[page]}</strong></div>
           <div className="portal-top-actions"><span className="portal-header-status"><i /> Services in development</span><button className="portal-signout" onClick={signOut}>Sign out</button></div>
         </header>
         <main className="portal-content">
+          {notificationAlert && (
+            <NotificationAlert
+              title={notificationAlert.title}
+              body={notificationAlert.body}
+              onDismiss={() => setNotificationAlert(null)}
+            />
+          )}
           {error && <div className="portal-error-banner" role="alert"><span>{error}</span><button onClick={loadDashboard}>Retry</button></div>}
           {loading && !dashboard ? <div className="portal-loading-panel"><span className="portal-spinner" />Loading your account details…</div> : dashboard && <>
             {page === 'overview' && <OverviewPage dashboard={dashboard} onNavigate={setPage} />}

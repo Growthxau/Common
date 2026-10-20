@@ -12,6 +12,8 @@ const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), 'gsquad-server-tes
 const databasePath = path.join(temporaryDirectory, 'test.sqlite');
 const adminPassword = 'integration-test-password-8492!';
 const derivPat = 'never-return-this-test-credential';
+const replacementDerivPat = 'replacement-test-credential-482';
+const secretsKey = Buffer.alloc(32, 7).toString('base64');
 
 async function unusedPort() {
   const server = net.createServer();
@@ -89,13 +91,17 @@ async function startSmtpServer(messages) {
   return server;
 }
 
-function tokenFromEmail(message, key) {
+function linkFromEmail(message, key) {
   const decoded = message
     .replace(/=\r?\n/g, '')
     .replace(/=([0-9A-F]{2})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
   const link = decoded.match(new RegExp(`https?:[^\\s<>]+[?&]${key}=([^&\\s<>"]+)`))?.[0];
   assert.ok(link, `${key} link should be sent`);
-  return new URL(link).searchParams.get(key);
+  return new URL(link);
+}
+
+function tokenFromEmail(message, key) {
+  return linkFromEmail(message, key).searchParams.get(key);
 }
 
 test('admin login, employee access, configuration, protected APIs, and logout work end to end', async (context) => {
@@ -120,6 +126,7 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     ADMIN_PASSWORD: adminPassword,
     DERIV_PAT: derivPat,
     DERIV_APP_ID: 'test-app-id',
+    GSQUAD_SECRETS_KEY: secretsKey,
     SMTP_HOST: '127.0.0.1',
     SMTP_PORT: String(smtpPort),
     SMTP_SECURE: 'false',
@@ -139,10 +146,16 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.ok(health, 'server should start');
   assert.equal(health.status, 200);
   assert.deepEqual(await health.json(), { status: 'ok', tradingEnabled: false, paymentsEnabled: false });
+  const publicSettings = await fetch(`${origin}/api/app-settings`);
+  assert.equal(publicSettings.status, 200);
+  assert.deepEqual((await publicSettings.json()).settings, { organizationName: 'G-Squad', appLogo: '' });
 
   const page = await fetch(`${origin}/`);
   assert.equal(page.status, 200);
   assert.match(await page.text(), /G-Squad/);
+  const adminPage = await fetch(`${origin}/admin`);
+  assert.equal(adminPage.status, 200);
+  assert.match(await adminPage.text(), /G-Squad/);
 
   const unauthorized = await fetch(`${origin}/api/admin/overview`);
   assert.equal(unauthorized.status, 401);
@@ -195,6 +208,27 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(settingsBody.derivAppIdConfigured, true);
   assert.equal(JSON.stringify(settingsBody).includes(derivPat), false);
 
+  const saveDerivCredentials = await fetch(`${origin}/api/admin/deriv-credentials`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ derivCredentials: { appId: '123456', pat: replacementDerivPat } }),
+  });
+  assert.equal(saveDerivCredentials.status, 200);
+  const derivStatus = await saveDerivCredentials.json();
+  assert.equal(derivStatus.derivAppId, '123456');
+  assert.equal(derivStatus.derivPatConfigured, true);
+  assert.equal(derivStatus.derivConnected, false);
+  assert.equal(JSON.stringify(derivStatus).includes(replacementDerivPat), false);
+  const storedSecret = spawnSync(process.execPath, ['-e', `
+    const Database = require('better-sqlite3');
+    const db = new Database(process.env.GSQUAD_DB_PATH, { readonly: true });
+    process.stdout.write(db.prepare("SELECT value_json FROM app_settings WHERE key = 'derivPatEncrypted'").get().value_json);
+    db.close();
+  `], { cwd: root, env, encoding: 'utf8' });
+  assert.equal(storedSecret.status, 0, storedSecret.stderr);
+  assert.equal(storedSecret.stdout.includes(replacementDerivPat), false);
+  assert.match(storedSecret.stdout, /^"v1:/);
+
   const saveSettings = await fetch(`${origin}/api/admin/settings`, {
     method: 'PUT',
     headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
@@ -203,10 +237,18 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
       supportEmail: 'help@example.com',
       defaultCurrency: 'EUR',
       timezone: 'Europe/London',
+      appLogo: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/xD8AAAAASUVORK5CYII=',
     } }),
   });
   assert.equal(saveSettings.status, 200);
-  assert.equal((await saveSettings.json()).settings.defaultCurrency, 'EUR');
+  const savedSettings = (await saveSettings.json()).settings;
+  assert.equal(savedSettings.defaultCurrency, 'EUR');
+  assert.equal(savedSettings.appLogo, 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/xD8AAAAASUVORK5CYII=');
+  const updatedPublicSettings = await fetch(`${origin}/api/app-settings`);
+  assert.deepEqual((await updatedPublicSettings.json()).settings, {
+    organizationName: 'G-Squad Operations',
+    appLogo: savedSettings.appLogo,
+  });
 
   const saveRiskSettings = await fetch(`${origin}/api/admin/risk-settings`, {
     method: 'PUT',
@@ -238,6 +280,18 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const employeeCookie = employeeLogin.headers.getSetCookie()[0].split(';')[0];
   const employeeSettings = await fetch(`${origin}/api/admin/settings`, { headers: { Cookie: employeeCookie } });
   assert.equal(employeeSettings.status, 403);
+  const employeeLogoUpdate = await fetch(`${origin}/api/admin/settings`, {
+    method: 'PUT',
+    headers: { Cookie: employeeCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: {
+      organizationName: 'Unauthorized change',
+      supportEmail: '',
+      defaultCurrency: 'USD',
+      timezone: 'UTC',
+      appLogo: '',
+    } }),
+  });
+  assert.equal(employeeLogoUpdate.status, 403);
   const employeeDirectory = await fetch(`${origin}/api/admin/employees`, { headers: { Cookie: employeeCookie } });
   assert.equal(employeeDirectory.status, 403);
   const employeeRiskSettings = await fetch(`${origin}/api/admin/risk-settings`, {
@@ -252,6 +306,12 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     } }),
   });
   assert.equal(employeeRiskSettings.status, 403);
+  const employeeDerivCredentials = await fetch(`${origin}/api/admin/deriv-credentials`, {
+    method: 'PUT',
+    headers: { Cookie: employeeCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ derivCredentials: { appId: '123456', pat: replacementDerivPat } }),
+  });
+  assert.equal(employeeDerivCredentials.status, 403);
   const persistedSettings = await fetch(`${origin}/api/admin/settings`, { headers: { Cookie: cookie } });
   assert.equal((await persistedSettings.json()).settings.organizationName, 'G-Squad Operations');
 
@@ -274,7 +334,9 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const registeredBody = await userRegister.json();
   assert.equal(registeredBody.verificationRequired, true);
   assert.match(registeredBody.message, /verification/i);
-  const verifyToken = tokenFromEmail(sentEmails.at(-1), 'verify');
+  const verificationLink = linkFromEmail(sentEmails.at(-1), 'verify');
+  assert.equal(verificationLink.pathname, '/');
+  const verifyToken = verificationLink.searchParams.get('verify');
 
   const duplicateRegister = await fetch(`${origin}/api/user/register`, {
     method: 'POST',
@@ -360,15 +422,19 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
     body: '{}',
   });
-  assert.equal(startBot.status, 409);
-  assert.equal((await startBot.json()).tradingEnabled, false);
-  const stopBot = await fetch(`${origin}/api/user/bot/stop`, {
-    method: 'POST',
-    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
-    body: '{}',
+  assert.equal(startBot.status, 200);
+  assert.deepEqual(await startBot.json(), {
+    botEnabled: true,
+    tradingEnabled: false,
+    message: 'Your participation preference is on. This does not place trades.',
   });
-  assert.equal(stopBot.status, 200);
-
+  const optedInDashboard = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
+  assert.equal((await optedInDashboard.json()).user.botEnabled, true);
+  const optedInAdminUsers = await fetch(`${origin}/api/admin/users`, { headers: { Cookie: cookie } });
+  const optedInMember = (await optedInAdminUsers.json()).records.find((record) => record.email === 'portal-member@example.com');
+  assert.equal(optedInMember.botEnabled, 1);
+  const optedInOverview = await fetch(`${origin}/api/admin/overview`, { headers: { Cookie: cookie } });
+  assert.equal((await optedInOverview.json()).metrics.activeBots, 1);
   const saveProfile = await fetch(`${origin}/api/user/profile`, {
     method: 'PUT',
     headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
@@ -444,6 +510,19 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   });
   assert.equal(userLogin.status, 200);
   assert.equal((await userLogin.json()).user.accountId, loginResult.user.accountId);
+  const persistedPreference = await fetch(`${origin}/api/user/dashboard`, {
+    headers: { Cookie: userLogin.headers.getSetCookie()[0].split(';')[0] },
+  });
+  assert.equal((await persistedPreference.json()).user.botEnabled, true);
+  const stopBot = await fetch(`${origin}/api/user/bot/stop`, {
+    method: 'POST',
+    headers: { Cookie: userCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(stopBot.status, 200);
+  assert.equal((await stopBot.json()).botEnabled, false);
+  const optedOutDashboard = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
+  assert.equal((await optedOutDashboard.json()).user.botEnabled, false);
 
   const passwordResetRequest = await fetch(`${origin}/api/user/password/forgot`, {
     method: 'POST',
@@ -451,7 +530,9 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     body: JSON.stringify({ email: 'portal-member@example.com' }),
   });
   assert.equal(passwordResetRequest.status, 200);
-  const resetToken = tokenFromEmail(sentEmails.at(-1), 'reset');
+  const resetLink = linkFromEmail(sentEmails.at(-1), 'reset');
+  assert.equal(resetLink.pathname, '/');
+  const resetToken = resetLink.searchParams.get('reset');
   const resetPassword = await fetch(`${origin}/api/user/password/reset`, {
     method: 'POST',
     headers: { Origin: origin, 'Content-Type': 'application/json' },
@@ -497,6 +578,18 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const productionHealth = await waitForHealth(origin);
   assert.ok(productionHealth, 'production server should start');
   assert.equal(productionHealth.status, 200);
+  const productionLogin = await fetch(`${origin}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({ username: 'integration-admin', password: adminPassword }),
+  });
+  assert.equal(productionLogin.status, 200);
+  const productionCookie = productionLogin.headers.getSetCookie()[0].split(';')[0];
+  const persistedDerivCredentials = await fetch(`${origin}/api/admin/settings`, { headers: { Cookie: productionCookie } });
+  const persistedDerivStatus = await persistedDerivCredentials.json();
+  assert.equal(persistedDerivStatus.derivAppId, '123456');
+  assert.ok(persistedDerivStatus.settings.appLogo);
+  assert.equal(JSON.stringify(persistedDerivStatus).includes(replacementDerivPat), false);
 
   const productionPage = await fetch(`${origin}/`);
   assert.equal(productionPage.status, 200);
@@ -507,7 +600,12 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(jsAsset.status, 200);
   assert.match(jsAsset.headers.get('content-type'), /javascript/);
   assert.match(productionPage.headers.get('content-security-policy'), /upgrade-insecure-requests/);
-  const userPortalPage = await fetch(`${origin}/user`);
-  assert.equal(userPortalPage.status, 200);
-  assert.match(await userPortalPage.text(), /G-Squad/);
+  const memberPortalPage = await fetch(`${origin}/`);
+  assert.equal(memberPortalPage.status, 200);
+  assert.match(await memberPortalPage.text(), /G-Squad/);
+  const productionAdminPage = await fetch(`${origin}/admin`);
+  assert.equal(productionAdminPage.status, 200);
+  assert.match(await productionAdminPage.text(), /G-Squad/);
+  const productionPublicSettings = await fetch(`${origin}/api/app-settings`);
+  assert.equal((await productionPublicSettings.json()).settings.appLogo, persistedDerivStatus.settings.appLogo);
 });

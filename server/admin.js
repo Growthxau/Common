@@ -2,18 +2,21 @@ const express = require('express');
 const { randomUUID } = require('node:crypto');
 const db = require('./db');
 const { audit, hashPassword } = require('./auth');
+const { encryptSecret } = require('./secrets');
 
 const router = express.Router();
-const elevatedResources = new Set(['users', 'employees', 'connection', 'settings', 'risk-settings', 'deposits', 'withdrawals', 'rounds', 'ledger', 'audit']);
+const elevatedResources = new Set(['users', 'employees', 'connection', 'settings', 'deriv-credentials', 'risk-settings', 'deposits', 'withdrawals', 'rounds', 'ledger', 'audit']);
 
 const defaultSettings = {
   organizationName: 'G-Squad',
   supportEmail: '',
   defaultCurrency: 'USD',
   timezone: 'UTC',
+  appLogo: '',
 };
 
 const configurableSettings = new Set(Object.keys(defaultSettings));
+const MAX_LOGO_BYTES = 1024 * 1024;
 
 router.use((request, response, next) => {
   const resource = request.path.split('/').filter(Boolean)[0];
@@ -42,6 +45,19 @@ function readSettings() {
   return settings;
 }
 
+function readDerivCredentialStatus() {
+  const appId = db.prepare("SELECT value_json FROM app_settings WHERE key = 'derivAppId'").get();
+  const pat = db.prepare("SELECT value_json FROM app_settings WHERE key = 'derivPatEncrypted'").get();
+  const derivAppId = appId ? JSON.parse(appId.value_json) : (process.env.DERIV_APP_ID || '');
+  const derivPatConfigured = Boolean(pat || process.env.DERIV_PAT);
+  return {
+    derivAppId,
+    derivAppIdConfigured: Boolean(derivAppId),
+    derivPatConfigured,
+    derivConfigured: Boolean(derivAppId && derivPatConfigured),
+  };
+}
+
 function validSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   if (typeof value.organizationName !== 'string' || !value.organizationName.trim() || value.organizationName.trim().length > 80) return false;
@@ -58,6 +74,20 @@ function validSettings(value) {
     new Intl.DateTimeFormat('en', { timeZone: value.timezone });
   } catch {
     return false;
+  }
+  if (value.appLogo !== undefined && typeof value.appLogo !== 'string') return false;
+  if (value.appLogo) {
+    const match = value.appLogo.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})$/);
+    if (!match || match[2].length > Math.ceil(MAX_LOGO_BYTES / 3) * 4) return false;
+    const image = Buffer.from(match[2], 'base64');
+    if (image.length > MAX_LOGO_BYTES || image.toString('base64') !== match[2]) return false;
+    const validImage = match[1] === 'image/png'
+      ? image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      : match[1] === 'image/jpeg'
+        ? image[0] === 255 && image[1] === 216 && image[2] === 255
+        : image.toString('ascii', 0, 4) === 'RIFF'
+          && image.toString('ascii', 8, 12) === 'WEBP';
+    if (!validImage) return false;
   }
   return true;
 }
@@ -102,7 +132,7 @@ router.get('/overview', (request, response) => {
       JOIN users ON users.id = withdrawals.user_id
       WHERE withdrawals.status = 'pending' AND users.is_demo = 0
     `),
-    derivConfigured: Boolean(process.env.DERIV_PAT && process.env.DERIV_APP_ID),
+    derivConfigured: Boolean(readDerivCredentialStatus().derivConfigured),
     derivConnected: false,
     tradingEnabled: false,
   };
@@ -128,9 +158,7 @@ router.get('/settings', (request, response) => {
     settings: readSettings(),
     riskSettings,
     tradingEnabled: false,
-    derivConfigured: Boolean(process.env.DERIV_PAT && process.env.DERIV_APP_ID),
-    derivPatConfigured: Boolean(process.env.DERIV_PAT),
-    derivAppIdConfigured: Boolean(process.env.DERIV_APP_ID),
+    ...readDerivCredentialStatus(),
     derivConnected: false,
   });
 });
@@ -154,6 +182,7 @@ router.put('/settings', (request, response) => {
     supportEmail: settings.supportEmail.trim(),
     defaultCurrency: settings.defaultCurrency.toUpperCase(),
     timezone: settings.timezone.trim(),
+    appLogo: settings.appLogo === undefined ? readSettings().appLogo : settings.appLogo,
   };
   const saveSettings = db.transaction(() => {
     for (const key of configurableSettings) {
@@ -169,6 +198,56 @@ router.put('/settings', (request, response) => {
   });
   saveSettings();
   return response.json({ settings: readSettings() });
+});
+
+router.put('/deriv-credentials', (request, response) => {
+  const credentials = request.body?.derivCredentials;
+  if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)
+      || typeof credentials.appId !== 'string' || !/^\d{1,20}$/.test(credentials.appId.trim())
+      || typeof credentials.pat !== 'string' || credentials.pat.length > 512
+      || (credentials.pat && !/^[A-Za-z0-9_-]{8,512}$/.test(credentials.pat))) {
+    return response.status(400).json({ error: 'Deriv credentials are invalid.' });
+  }
+  if (credentials.pat && !process.env.GSQUAD_SECRETS_KEY) {
+    return response.status(503).json({ error: 'Encrypted secret storage is not configured on the server.' });
+  }
+
+  let encryptedPat;
+  try {
+    if (credentials.pat) encryptedPat = encryptSecret(credentials.pat);
+  } catch {
+    return response.status(503).json({ error: 'Encrypted secret storage is not configured correctly.' });
+  }
+
+  const saveCredential = db.prepare(`
+    INSERT INTO app_settings (key, value_json, updated_by_admin_id, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET
+      value_json = excluded.value_json,
+      updated_by_admin_id = excluded.updated_by_admin_id,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+  try {
+    db.transaction(() => {
+      saveCredential.run('derivAppId', JSON.stringify(credentials.appId.trim()), request.admin.id);
+      if (encryptedPat) saveCredential.run('derivPatEncrypted', JSON.stringify(encryptedPat), request.admin.id);
+      audit({
+        adminId: request.admin.id,
+        action: 'deriv_credentials.updated',
+        targetType: 'integration_credentials',
+        details: { appIdChanged: true, patReplaced: Boolean(encryptedPat) },
+        request,
+      });
+    })();
+  } catch {
+    return response.status(500).json({ error: 'Deriv credentials could not be saved.' });
+  }
+
+  const status = readDerivCredentialStatus();
+  if (!status.derivAppIdConfigured || (encryptedPat && !status.derivPatConfigured)) {
+    return response.status(500).json({ error: 'Deriv credentials were not persisted.' });
+  }
+  return response.json({ ...status, derivConnected: false });
 });
 
 router.put('/risk-settings', (request, response) => {

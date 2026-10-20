@@ -484,27 +484,29 @@ router.put('/risk-settings', (request, response) => {
 });
 
 router.post('/bot/start', (request, response) => {
-  audit({
-    action: 'user.bot_start_rejected',
-    targetType: 'user',
-    targetId: request.user.id,
-    details: { reason: 'trading_engine_disabled' },
-    request,
-  });
-  return response.status(409).json({
-    error: 'Bot start is unavailable because the trading engine is disabled.',
-    botEnabled: false,
+  db.transaction(() => {
+    db.prepare('UPDATE users SET bot_enabled = 1 WHERE id = ?').run(request.user.id);
+    audit({
+      action: 'user.bot_opted_in',
+      targetType: 'user',
+      targetId: request.user.id,
+      details: { configuredStakeMinor: request.user.configured_stake_minor },
+      request,
+    });
+  })();
+  return response.json({
+    botEnabled: true,
     tradingEnabled: false,
-    connectionStatus: 'unavailable',
+    message: 'Your participation preference is on. This does not place trades.',
   });
 });
 
 router.post('/bot/stop', (request, response) => {
   db.transaction(() => {
     db.prepare('UPDATE users SET bot_enabled = 0 WHERE id = ?').run(request.user.id);
-    audit({ action: 'user.bot_stopped', targetType: 'user', targetId: request.user.id, request });
+    audit({ action: 'user.bot_opted_out', targetType: 'user', targetId: request.user.id, request });
   })();
-  return response.json({ botEnabled: false, tradingEnabled: false, message: 'Your bot has been stopped.' });
+  return response.json({ botEnabled: false, tradingEnabled: false, message: 'Your participation preference is off.' });
 });
 
 router.get('/activity', (request, response) => {

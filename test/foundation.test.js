@@ -9,10 +9,48 @@ process.env.GSQUAD_DB_PATH = path.join(temporaryDirectory, 'test.sqlite');
 
 const db = require('../server/db');
 const { hashPassword, verifyPassword } = require('../server/auth');
+const { getPublicOrigin } = require('../server/origin');
+const { detectDeviceType, isMobileOnlyDevice } = require('../src/device');
 
 test.after(() => {
   db.close();
   rmSync(temporaryDirectory, { recursive: true, force: true });
+});
+
+test('device detection classifies mobile, tablet, and desktop correctly', () => {
+  assert.equal(detectDeviceType({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', maxTouchPoints: 5, innerWidth: 390 }), 'mobile');
+  assert.equal(detectDeviceType({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 0, innerWidth: 1440 }), 'desktop');
+  assert.equal(detectDeviceType({ userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)', maxTouchPoints: 2, innerWidth: 1024 }), 'tablet');
+  assert.equal(detectDeviceType({ userAgent: 'Mozilla/5.0 (Android 14; Tablet)', maxTouchPoints: 5, innerWidth: 600 }), 'tablet');
+  assert.equal(detectDeviceType({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 5, innerWidth: 600 }), 'tablet');
+  assert.equal(isMobileOnlyDevice({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 0, innerWidth: 1440 }), false);
+  assert.equal(isMobileOnlyDevice({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', maxTouchPoints: 5, innerWidth: 390 }), true);
+});
+
+test('public origin uses Vercel production URL without requiring APP_ORIGIN', () => {
+  const previous = {
+    appOrigin: process.env.APP_ORIGIN,
+    productionUrl: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    vercelUrl: process.env.VERCEL_URL,
+    nodeEnv: process.env.NODE_ENV,
+  };
+  process.env.APP_ORIGIN = '';
+  process.env.VERCEL_PROJECT_PRODUCTION_URL = 'g-squad.example.vercel.app';
+  process.env.VERCEL_URL = 'g-squad-preview.example.vercel.app';
+  process.env.NODE_ENV = 'production';
+
+  try {
+    assert.equal(getPublicOrigin({ protocol: 'http', get: () => 'internal-host' }), 'https://g-squad.example.vercel.app');
+  } finally {
+    if (previous.appOrigin === undefined) delete process.env.APP_ORIGIN;
+    else process.env.APP_ORIGIN = previous.appOrigin;
+    if (previous.productionUrl === undefined) delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    else process.env.VERCEL_PROJECT_PRODUCTION_URL = previous.productionUrl;
+    if (previous.vercelUrl === undefined) delete process.env.VERCEL_URL;
+    else process.env.VERCEL_URL = previous.vercelUrl;
+    if (previous.nodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previous.nodeEnv;
+  }
 });
 
 test('admin passwords are salted and verified without storing the raw value', async () => {

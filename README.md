@@ -17,7 +17,7 @@ G-Squad is a Node.js, Express, React, and SQLite application with separate membe
    npm install
    ```
 
-2. Copy `.env.example` to `.env`, then set a unique admin username and a strong password of at least 14 characters. Keep `.env` out of source control. Deriv credentials are read by the backend only and do not activate a connection.
+2. Copy `.env.example` to `.env`, then set a unique admin username and a strong password of at least 14 characters. Keep `.env` out of source control. Set `GSQUAD_SECRETS_KEY` to a generated base64-encoded 32-byte key before saving a Deriv PAT through the admin UI. Protect and back up this key separately from the database; losing it makes stored PATs unrecoverable. Deriv credentials do not activate a connection.
 
 3. Bootstrap a super-admin:
 
@@ -33,9 +33,9 @@ G-Squad is a Node.js, Express, React, and SQLite application with separate membe
    npm run dev
    ```
 
-   Open <http://localhost:3000>.
+   Open <http://localhost:3000> for the member portal or <http://localhost:3000/admin> for administration.
 
-5. To enable member registration, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. Use `SMTP_SECURE=true` for implicit TLS (commonly port 465); port 587 typically uses STARTTLS. Set `APP_ORIGIN` to the exact public origin so verification and password-reset links point to the deployed application. In production, `APP_ORIGIN` must use HTTPS. Registration remains unavailable until SMTP is configured.
+5. To enable member registration, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. Use `SMTP_SECURE=true` for implicit TLS (commonly port 465); port 587 typically uses STARTTLS. On Vercel, account links automatically use the project's production URL, or the deployment URL if no production URL is available. `APP_ORIGIN` is optional and can override this with your custom domain (for example, `https://example.com`). Outside Vercel, set `APP_ORIGIN` to the exact public HTTPS origin in production. Registration remains unavailable until SMTP is configured.
 
 For a production-style static build and server:
 
@@ -44,20 +44,20 @@ npm run build
 npm start
 ```
 
-Set `NODE_ENV=production` and `APP_ORIGIN` to the exact HTTPS origin when deploying behind TLS. If the app is behind a trusted reverse proxy, configure `TRUST_PROXY` for that proxy. Configure `PORT` and `GSQUAD_DB_PATH` as needed. SQLite data is stored in the ignored `data/` directory by default.
+Set `NODE_ENV=production` when deploying behind TLS. On Vercel, the app detects its public URL automatically; set `APP_ORIGIN` only if you need account links to use a custom domain. Outside Vercel, set `APP_ORIGIN` to the exact HTTPS origin. If the app is behind a trusted reverse proxy, configure `TRUST_PROXY` for that proxy. Configure `PORT` and `GSQUAD_DB_PATH` as needed. SQLite data is stored in the ignored `data/` directory by default.
 
 ## Administration
 
 - **Employee access:** Super-admins can provision employee accounts and assign either `admin` (read-only operational access) or `super_admin` (full administrative access). Initial passwords must be at least 14 characters.
-- **Application settings:** Super-admins can configure organization name, support email, default currency, and timezone. Integration secrets stay in server environment variables and are never returned to the browser.
+- **Application settings:** Super-admins can configure organization name, support email, default currency, timezone, a PNG/JPEG/WebP application logo (up to 1 MB), and Deriv App ID. The logo is used throughout both portals and is shown by itself on the eight-second splash screen. A Deriv PAT can be replaced through the UI; it is encrypted with AES-256-GCM in SQLite, masked from API responses, and audited without recording its value. The encryption key must be supplied by the deployment environment. Deriv connection testing is not implemented.
 - **Risk management:** Super-admins can record daily loss/profit targets, combined-stake and exposure limits, and the emergency-stop setting. These settings do not enable execution.
 - **Audit:** Sign-ins, employee creation, and configuration changes are recorded in the append-only audit log.
 - Legacy records previously marked as synthetic are hidden from ordinary account, payment, support, and liability views; they are retained rather than destructively deleted.
 
 ## Member portal
 
-- Visit <http://localhost:3000/user> for the member welcome, registration, sign-in, and account recovery flows. Registration creates a `GSQ-XXXXXX` account ID and empty USD wallet, and requires email verification before login. There is no public staff registration.
-- The member portal includes Dashboard, Wallet, Bot, Risk, Trading activity, Notifications, Account, and Support views. Members can review their own ledger, confirmed trade records, and support history; update personal risk settings; and manage notification preferences and passwords.
+- Visit the main domain (for example, <https://your-project.vercel.app>) for the member welcome, registration, sign-in, and account recovery flows. Visit `/admin` on that domain for administration. Registration creates a `GSQ-XXXXXX` account ID and empty USD wallet, and requires email verification before login. There is no public staff registration.
+- The member portal is restricted to mobile devices and includes Dashboard, Wallet, Bot, Risk, Trading activity, Notifications, Account, and Support views. Members can review their own ledger, confirmed trade records, and support history; update personal risk settings; and manage notification preferences and passwords. Notifications are checked while the portal is open, with a louder in-app sound and vibration alert for newly received notices when supported by the device.
 - Deposits and withdrawals are shown as unavailable. The UI cannot create payment requests, and no unverified payment is credited. Bot start is rejected while the trading engine is disabled; stop requests persist. Saving risk preferences does not enable execution.
 - Member passwords use scrypt hashes; verification and reset tokens are hashed in SQLite, expire after one hour, and are sent via configured SMTP. Member sessions use expiring, server-stored tokens in HttpOnly, SameSite cookies. Account APIs require an authenticated session and same-origin state-changing requests.
 
