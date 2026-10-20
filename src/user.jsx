@@ -221,7 +221,6 @@ function UserAuth({ branding, onAuthenticate, initialMode = 'welcome', token = '
             </p>
           </>}
           <div className="portal-auth-divider" />
-          <a className="portal-admin-link" href="/admin">Administration sign-in <span aria-hidden="true">↗</span></a>
         </div>
       </section>
     </main>
