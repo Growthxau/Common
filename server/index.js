@@ -6,7 +6,19 @@ const cookieParser = require('cookie-parser');
 const { rateLimit } = require('express-rate-limit');
 const db = require('./database');
 const adminRouter = require('./admin');
-const { adminSessionDurationMs, audit, login, logout, requireAdmin } = require('./auth');
+const {
+  adminSessionDurationMs,
+  audit,
+  disableMfa,
+  enableMfa,
+  listAdminSessions,
+  login,
+  logout,
+  requireAdmin,
+  revokeAdminSession,
+  setupMfa,
+  verifyLoginMfa,
+} = require('./auth');
 const { bootstrapAdmin } = require('./admin-bootstrap');
 const userModule = require('./user');
 const { getRequestOrigin } = require('./origin');
@@ -114,6 +126,8 @@ function requireSameOriginForChanges(request, response, next) {
 
 app.use('/api/auth/login', loginLimiter, requireSameOriginForChanges);
 app.use('/api/auth/logout', requireSameOriginForChanges);
+app.use('/api/auth/mfa', requireSameOriginForChanges);
+app.use('/api/auth/sessions', requireSameOriginForChanges);
 app.use('/api/admin', requireSameOriginForChanges);
 app.use('/api/user', requireSameOriginForChanges);
 app.use(express.json({ limit: '2mb', strict: true }));
@@ -135,17 +149,28 @@ app.get('/api/app-settings', async (request, response, next) => {
     `).all();
     const settings = { organizationName: 'G-Squad', appLogo: '' };
     for (const row of rows) settings[row.key] = JSON.parse(row.value_json);
-    return response.json({ settings });
+    const registration = await db.prepare("SELECT value_json FROM app_settings WHERE key = 'memberRegistrationEnabled'").get();
+    return response.json({ settings, registrationEnabled: registration ? JSON.parse(registration.value_json) : true });
   } catch (error) {
     return next(error);
   }
 });
 
 app.post('/api/auth/login', login);
+app.post('/api/auth/mfa/verify', loginLimiter, verifyLoginMfa);
+app.post('/api/auth/mfa/setup', requireAdmin, setupMfa);
+app.post('/api/auth/mfa/enable', requireAdmin, enableMfa);
+app.post('/api/auth/mfa/disable', requireAdmin, disableMfa);
+app.get('/api/auth/sessions', requireAdmin, listAdminSessions);
+app.delete('/api/auth/sessions/:sessionId', requireAdmin, revokeAdminSession);
 app.get('/api/auth/me', requireAdmin, (request, response) => {
   response.json({
     user: {
-      ...request.admin,
+      id: request.admin.id,
+      username: request.admin.username,
+      role: request.admin.role,
+      permissions: request.admin.permissions,
+      mfaEnabled: Boolean(request.admin.mfaEnabled),
       sessionDurationMinutes: adminSessionDurationMs() / 60_000,
     },
     tradingEnabled: false,

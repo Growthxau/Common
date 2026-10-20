@@ -58,6 +58,8 @@ async function initialize() {
     }
     for (const [table, column, definition] of [
       ['admin_users', 'permissions_json', `TEXT NOT NULL DEFAULT '[]'`],
+      ['admin_sessions', 'ip_address', 'TEXT'],
+      ['admin_sessions', 'user_agent', 'TEXT'],
       ['deposits', 'review_note', 'TEXT'],
       ['withdrawals', 'review_note', 'TEXT'],
     ]) {

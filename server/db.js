@@ -25,6 +25,8 @@ db.exec(`
     token_hash TEXT PRIMARY KEY,
     admin_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL,
+    ip_address TEXT,
+    user_agent TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS admin_sessions_expiry_idx ON admin_sessions(expires_at);
@@ -33,6 +35,24 @@ db.exec(`
     failure_count INTEGER NOT NULL DEFAULT 0,
     window_started_at TEXT NOT NULL,
     locked_until TEXT
+  );
+  CREATE TABLE IF NOT EXISTS admin_mfa (
+    admin_id TEXT PRIMARY KEY REFERENCES admin_users(id) ON DELETE CASCADE,
+    secret_encrypted TEXT NOT NULL,
+    enabled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS admin_mfa_recovery_codes (
+    admin_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL,
+    used_at TEXT,
+    PRIMARY KEY (admin_id, token_hash)
+  );
+  CREATE TABLE IF NOT EXISTS admin_login_challenges (
+    token_hash TEXT PRIMARY KEY,
+    admin_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS users (
@@ -276,15 +296,20 @@ for (const [column, definition] of userMigrations) {
   if (!userColumns.has(column)) {
     db.exec(`ALTER TABLE users ADD COLUMN ${column} ${definition}`);
   }
+}
 
-  for (const [table, column, definition] of [
-    ['admin_users', 'permissions_json', `TEXT NOT NULL DEFAULT '[]'`],
-    ['deposits', 'review_note', 'TEXT'],
-    ['withdrawals', 'review_note', 'TEXT'],
-  ]) {
-    const columns = new Set(db.pragma(`table_info(${table})`).map((column) => column.name));
-    if (!columns.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
+const adminSessionColumns = new Set(db.pragma('table_info(admin_sessions)').map((column) => column.name));
+for (const [column, definition] of [['ip_address', 'TEXT'], ['user_agent', 'TEXT']]) {
+  if (!adminSessionColumns.has(column)) db.exec(`ALTER TABLE admin_sessions ADD COLUMN ${column} ${definition}`);
+}
+
+for (const [table, column, definition] of [
+  ['admin_users', 'permissions_json', `TEXT NOT NULL DEFAULT '[]'`],
+  ['deposits', 'review_note', 'TEXT'],
+  ['withdrawals', 'review_note', 'TEXT'],
+]) {
+  const columns = new Set(db.pragma(`table_info(${table})`).map((column) => column.name));
+  if (!columns.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 db.exec(`

@@ -16,6 +16,16 @@ const permissionChoices = [
   ['transactions.read', 'View deposit and withdrawal records'],
   ['transactions.review', 'Approve or reject transactions'],
   ['audit.read', 'View audit history'],
+  ['employees.manage', 'Manage scoped staff accounts and permissions'],
+  ['settings.manage', 'Manage application defaults and risk limits'],
+  ['support.manage', 'Manage support cases and replies'],
+  ['alerts.manage', 'Review and acknowledge operational alerts'],
+];
+const permissionTemplates = [
+  { id: 'member-support', label: 'Member service', permissions: ['users.read', 'users.manage', 'support.manage'] },
+  { id: 'transaction-review', label: 'Transaction reviewer', permissions: ['transactions.read', 'transactions.review'] },
+  { id: 'support-agent', label: 'Support agent', permissions: ['support.manage', 'alerts.manage'] },
+  { id: 'security-operator', label: 'Security operator', permissions: ['audit.read', 'alerts.manage'] },
 ];
 
 function hasAdminPermission(user, permission) {
@@ -31,7 +41,11 @@ function canAccessPage(user, page) {
   if (page === 'users') return hasAdminPermission(user, 'users.read');
   if (page === 'deposits' || page === 'withdrawals') return hasAdminPermission(user, 'transactions.read');
   if (page === 'security') return hasAdminPermission(user, 'audit.read');
-  if (['employees', 'settings', 'connection', 'risk', 'profit', 'ledger'].includes(page)) return false;
+  if (page === 'employees') return hasAdminPermission(user, 'employees.manage');
+  if (page === 'settings' || page === 'risk') return hasAdminPermission(user, 'settings.manage');
+  if (page === 'support') return hasAdminPermission(user, 'support.manage');
+  if (page === 'notifications') return hasAdminPermission(user, 'alerts.manage');
+  if (['connection', 'profit', 'ledger'].includes(page)) return false;
   return true;
 }
 
@@ -40,6 +54,8 @@ let applicationSettings = {
   defaultCurrency: 'USD',
   timezone: 'UTC',
   appLogo: '',
+  memberRegistrationEnabled: true,
+  notificationCategories: { account: true, wallet: true, security: true },
 };
 
 const pageDetails = {
@@ -103,6 +119,8 @@ function dateLabel(value) {
 function SignIn({ onSignIn }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [challenge, setChallenge] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -114,6 +132,24 @@ function SignIn({ onSignIn }) {
       const result = await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({ username, password }),
+      });
+      if (result.mfaRequired) setChallenge(result.challenge);
+      else onSignIn(result.user);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyCode(event) {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const result = await api('/api/auth/mfa/verify', {
+        method: 'POST',
+        body: JSON.stringify({ challenge, code }),
       });
       onSignIn(result.user);
     } catch (requestError) {
@@ -130,13 +166,20 @@ function SignIn({ onSignIn }) {
         <p className="eyebrow">SECURE ADMIN ACCESS</p>
         <h1 id="login-title">Welcome back</h1>
         <p className="muted">Sign in to the G-Squad administration console.</p>
-        <form className="login-form" onSubmit={submit}>
-          <label htmlFor="username">Admin username</label>
-          <input id="username" autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
-          <label htmlFor="password">Password</label>
-          <input id="password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
+        <form className="login-form" onSubmit={challenge ? verifyCode : submit}>
+          {!challenge ? <>
+            <label htmlFor="username">Admin username</label>
+            <input id="username" autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
+            <label htmlFor="password">Password</label>
+            <input id="password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
+          </> : <>
+            <p className="muted">Enter the six-digit code from your authenticator app, or an unused recovery code.</p>
+            <label htmlFor="mfa-code">Authenticator code</label>
+            <input id="mfa-code" autoComplete="one-time-code" inputMode="numeric" maxLength="100" required value={code} onChange={(event) => setCode(event.target.value)} />
+          </>}
           {error && <p className="inline-error" role="alert">{error}</p>}
-          <button className="button button-primary login-submit" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in securely'}</button>
+          <button className="button button-primary login-submit" type="submit" disabled={busy}>{busy ? 'Signing in…' : challenge ? 'Verify and sign in' : 'Sign in securely'}</button>
+          {challenge && <button className="button button-subtle" type="button" onClick={() => { setChallenge(''); setCode(''); setError(''); }}>Back to sign in</button>}
         </form>
         <p className="login-footnote">Employee admin accounts are provisioned by a super-admin. Public registration is unavailable.</p>
         <div className="operations-note"><span className="status-dot status-dot-amber"></span> Trading and payment operations are disabled</div>
@@ -513,6 +556,21 @@ function ApplicationSettingsEditor({ settings, onSettingsChanged }) {
         <label className="form-field"><span>Default currency (ISO 4217)</span><input minLength="3" maxLength="3" pattern="[A-Za-z]{3}" required value={values.defaultCurrency} onChange={(event) => setValues({ ...values, defaultCurrency: event.target.value.toUpperCase() })} /></label>
         <label className="form-field"><span>Timezone</span><input maxLength="100" required value={values.timezone} onChange={(event) => setValues({ ...values, timezone: event.target.value })} placeholder="UTC" /></label>
       </div>
+      <fieldset className="permission-checklist">
+        <legend>Member operations</legend>
+        <label className="form-checkbox"><input type="checkbox" checked={values.memberRegistrationEnabled} onChange={(event) => setValues({ ...values, memberRegistrationEnabled: event.target.checked })} /><span>Allow new member registration</span></label>
+        <p className="muted">When disabled, existing members can still sign in and recover their accounts.</p>
+      </fieldset>
+      <fieldset className="permission-checklist">
+        <legend>Member notification categories</legend>
+        {Object.entries({ account: 'Account and support updates', wallet: 'Transaction updates', security: 'Security updates' }).map(([category, label]) => <label className="form-checkbox" key={category}>
+          <input type="checkbox" checked={values.notificationCategories[category]} onChange={(event) => setValues({
+            ...values,
+            notificationCategories: { ...values.notificationCategories, [category]: event.target.checked },
+          })} />
+          <span>{label}</span>
+        </label>)}
+      </fieldset>
       <div className="app-logo-field">
         <label className="form-field"><span>Application logo (PNG, JPEG, or WebP; max 1 MB)</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={selectLogo} /></label>
         <div className="app-logo-preview" aria-label="Application logo preview">
@@ -527,11 +585,12 @@ function ApplicationSettingsEditor({ settings, onSettingsChanged }) {
   );
 }
 
-function EmployeesPage({ data, loading, error, onRetry, pageQuery, onQueryChange }) {
+function EmployeesPage({ data, loading, error, onRetry, pageQuery, onQueryChange, user }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('admin');
   const [permissions, setPermissions] = useState([]);
+  const [permissionTemplate, setPermissionTemplate] = useState('');
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [formError, setFormError] = useState('');
@@ -550,6 +609,7 @@ function EmployeesPage({ data, loading, error, onRetry, pageQuery, onQueryChange
       setPassword('');
       setRole('admin');
       setPermissions([]);
+      setPermissionTemplate('');
       setFeedback('Employee account created.');
       onRetry();
     } catch (requestError) {
@@ -572,7 +632,15 @@ function EmployeesPage({ data, loading, error, onRetry, pageQuery, onQueryChange
           <label className="form-field"><span>Initial password (14+ characters)</span><input type="password" minLength="14" maxLength="1024" autoComplete="new-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
           <label className="form-field"><span>Role</span><select value={role} onChange={(event) => setRole(event.target.value)}><option value="admin">Admin — operational read-only</option><option value="super_admin">Super-admin — full administration</option></select></label>
         </div>
-        {role === 'admin' && <PermissionChecklist selected={permissions} onChange={setPermissions} />}
+        {role === 'admin' && <>
+          <label className="form-field"><span>Permission template (optional)</span><select value={permissionTemplate} onChange={(event) => {
+            setPermissionTemplate(event.target.value);
+            const template = permissionTemplates.find((item) => item.id === event.target.value);
+            setPermissions(template ? template.permissions.filter((permission) =>
+              user.role === 'super_admin' || (user.permissions || []).includes(permission)) : []);
+          }}><option value="">Custom permissions</option>{permissionTemplates.map((template) => <option value={template.id} key={template.id}>{template.label}</option>)}</select></label>
+          <PermissionChecklist selected={permissions} onChange={(next) => { setPermissionTemplate(''); setPermissions(next); }} />
+        </>}
         {formError && <p className="inline-error" role="alert">{formError}</p>}
         {feedback && <p className="form-feedback" role="status">{feedback}</p>}
         <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create employee'}</button></div>
@@ -925,11 +993,124 @@ function SecurityPage({ user, data, loading, error, onRetry, pageQuery, paginati
         <StatusLine label="Role" value={user.role.replace('_', ' ')} />
         <StatusLine label="Permissions" value={user.role === 'super_admin' ? 'Full administrative access; live financial actions remain disabled' : (user.permissions || []).join(', ') || 'Read-only operational access'} />
         <StatusLine label="Session protection" value={`HttpOnly · SameSite · server stored · ${user.sessionDurationMinutes || 60} minute expiry`} />
+        <StatusLine label="Multi-factor authentication" value={user.mfaEnabled ? 'Enabled' : 'Not enabled'} good={user.mfaEnabled} />
         <StatusLine label="Live money movement" value="Disabled" />
       </div>
+      <AdminSecurityControls mfaEnabled={user.mfaEnabled} />
       <RecordPage config={{ title: 'Admin audit log', subtitle: 'Recorded sign-in and administrative events.', resource: 'audit', columns: [['createdAt', 'Timestamp'], ['admin', 'Admin'], ['action', 'Action'], ['targetType', 'Target'], ['targetId', 'Record'], ['ipAddress', 'IP address']] }} data={data} loading={false} error={null} onRetry={onRetry} pageQuery={pageQuery} pagination={pagination} onQueryChange={onQueryChange} />
     </div>
   );
+}
+
+function AdminSecurityControls({ mfaEnabled }) {
+  const [mfaActive, setMfaActive] = useState(Boolean(mfaEnabled));
+  const [setup, setSetup] = useState(null);
+  const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const [code, setCode] = useState('');
+  const [sessions, setSessions] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [feedback, setFeedback] = useState('');
+
+  async function loadSessions() {
+    try {
+      const result = await api('/api/auth/sessions');
+      setSessions(result.sessions);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  useEffect(() => { loadSessions(); }, []);
+
+  async function beginSetup() {
+    setError('');
+    setFeedback('');
+    setBusy(true);
+    try {
+      setSetup(await api('/api/auth/mfa/setup', { method: 'POST', body: '{}' }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enable(event) {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const result = await api('/api/auth/mfa/enable', {
+        method: 'POST',
+        body: JSON.stringify({ secret: setup.secret, code }),
+      });
+      setRecoveryCodes(result.recoveryCodes);
+      setMfaActive(true);
+      setSetup(null);
+      setCode('');
+      setFeedback('MFA is enabled. Save the recovery codes now; they will not be shown again.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable(event) {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      await api('/api/auth/mfa/disable', { method: 'POST', body: JSON.stringify({ code }) });
+      setCode('');
+      setFeedback('MFA disabled for this account.');
+      window.location.reload();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(session) {
+    setError('');
+    try {
+      const result = await api(`/api/auth/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE' });
+      if (result.current) {
+        window.location.reload();
+        return;
+      }
+      setSessions((current) => current.filter((item) => item.id !== session.id));
+      setFeedback('Admin session revoked.');
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  return <section className="surface-card detail-card">
+    <div className="section-heading"><div><h2>Admin account protection</h2><p>Authenticator-app MFA and active session revocation apply to your account.</p></div></div>
+    {!mfaActive ? <div className="form-actions"><button className="button button-primary" type="button" disabled={busy} onClick={beginSetup}>{busy ? 'Preparing…' : 'Set up authenticator app'}</button></div> : <form className="member-lookup-form" onSubmit={disable}>
+      <label className="form-field"><span>Authenticator or recovery code to disable MFA</span><input required maxLength="100" value={code} onChange={(event) => setCode(event.target.value)} /></label>
+      <button className="button button-danger" type="submit" disabled={busy}>{busy ? 'Working…' : 'Disable MFA'}</button>
+    </form>}
+    {setup && <form className="config-form config-form-compact" onSubmit={enable}>
+      <p>Enter this secret manually in your authenticator app, then verify the current six-digit code.</p>
+      <code className="mfa-secret">{setup.secret}</code>
+      <a href={setup.otpauthUrl}>Open authenticator app</a>
+      <div className="member-lookup-form">
+        <label className="form-field"><span>Six-digit code</span><input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required value={code} onChange={(event) => setCode(event.target.value)} /></label>
+        <button className="button button-primary" type="submit" disabled={busy}>Verify and enable</button>
+      </div>
+    </form>}
+    {recoveryCodes.length > 0 && <div className="notice notice-warning"><span className="notice-icon">!</span><span>Save these one-time recovery codes securely: <code>{recoveryCodes.join(' · ')}</code></span></div>}
+    {error && <p className="inline-error" role="alert">{error}</p>}
+    {feedback && <p className="form-feedback" role="status">{feedback}</p>}
+    <div className="section-heading"><div><h3>Active admin sessions</h3><p>Revoke any session you do not recognize.</p></div><button className="button button-subtle" type="button" onClick={loadSessions}>Refresh</button></div>
+    {!sessions.length ? <p className="muted">No other active sessions.</p> : <div className="table-scroll"><table className="data-table"><thead><tr><th>Started</th><th>Expires</th><th>IP address</th><th>Device</th><th>Action</th></tr></thead><tbody>
+      {sessions.map((session) => <tr key={session.id}><td>{dateLabel(session.createdAt)}{session.current ? ' · Current' : ''}</td><td>{dateLabel(session.expiresAt)}</td><td>{session.ipAddress || '—'}</td><td>{session.userAgent || '—'}</td><td><button className="table-action" type="button" onClick={() => revoke(session)}>Revoke</button></td></tr>)}
+    </tbody></table></div>}
+  </section>;
 }
 
 function RecordPage({
@@ -1020,11 +1201,13 @@ function RecordPage({
       {reviewMessage && <p className="bulk-review-message" role="status">{reviewMessage}</p>}
       {visibleRecords.length === 0
         ? <div className="empty-state"><span className="empty-state-icon">▤</span><strong>{records.length ? 'No matching records' : 'No records yet'}</strong><span>{records.length ? 'Try a different search.' : 'When verified data is added, it will appear here.'}</span></div>
-        : <div className="table-scroll"><table className="data-table"><thead><tr>{isReviewable && <th scope="col">Select</th>}{config.columns.map(([, label]) => <th key={label} scope="col">{label}</th>)}{config.resource === 'rounds' && <th scope="col">Participants</th>}</tr></thead><tbody>
+        : <div className="table-scroll"><table className="data-table"><thead><tr>{isReviewable && <th scope="col">Select</th>}{config.columns.map(([, label]) => <th key={label} scope="col">{label}</th>)}{config.resource === 'rounds' && <th scope="col">Participants</th>}{['support', 'notifications'].includes(config.resource) && <th scope="col">Actions</th>}</tr></thead><tbody>
           {visibleRecords.map((record) => <tr key={record.id || `${record.accountId}-${record.createdAt}`}>
             {isReviewable && <td data-label="Select">{record.status === 'pending' ? <input type="checkbox" aria-label={`Select ${record.id}`} checked={selectedIds.includes(record.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, record.id] : current.filter((id) => id !== record.id))} /> : <span className="muted">—</span>}</td>}
             {config.columns.map(([key, label]) => <td key={key} data-label={label}><CellValue value={record[key]} record={record} field={key} /></td>)}
             {config.resource === 'rounds' && <td data-label="Participants"><button className="table-action" type="button" onClick={() => onSelectRound(record.id)}>View frozen list</button></td>}
+            {config.resource === 'support' && <td data-label="Actions"><SupportReviewActions record={record} onSaved={onRetry} /></td>}
+            {config.resource === 'notifications' && <td data-label="Actions"><AlertAcknowledgeAction record={record} onSaved={onRetry} /></td>}
           </tr>)}
         </tbody></table></div>}
       {config.resource === 'rounds' && selectedRound && <section className="round-detail" aria-label="Trading round participants">
@@ -1050,6 +1233,60 @@ function RecordPage({
       <PaginationControls pagination={pagination} onPageChange={(page) => onQueryChange({ page })} />
     </section>
   );
+}
+
+function SupportReviewActions({ record, onSaved }) {
+  const [status, setStatus] = useState(record.status);
+  const [response, setResponse] = useState(record.response || '');
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState('');
+
+  async function save(event) {
+    event.preventDefault();
+    setBusy(true);
+    setFeedback('');
+    try {
+      await api(`/api/admin/support/${encodeURIComponent(record.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, response, assignedAdminId: record.assignedAdminId || null }),
+      });
+      setFeedback('Saved');
+      onSaved();
+    } catch (error) {
+      setFeedback(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <form className="support-review-actions" onSubmit={save}>
+    <select aria-label={`Status for ${record.subject}`} value={status} onChange={(event) => setStatus(event.target.value)}>
+      <option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option>
+    </select>
+    <input aria-label={`Reply to ${record.subject}`} maxLength="2000" value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Optional member reply" />
+    <button className="table-action" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+    {feedback && <small role="status">{feedback}</small>}
+  </form>;
+}
+
+function AlertAcknowledgeAction({ record, onSaved }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (record.acknowledgedAt) return <span className="status-tag status-tag-good">Acknowledged</span>;
+
+  async function acknowledge() {
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/api/admin/notifications/${encodeURIComponent(record.id)}/acknowledge`, { method: 'POST' });
+      onSaved();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <><button className="table-action" type="button" disabled={busy} onClick={acknowledge}>{busy ? 'Saving…' : 'Acknowledge'}</button>{error && <small className="inline-error">{error}</small>}</>;
 }
 
 function PaginationControls({ pagination, onPageChange }) {
@@ -1109,7 +1346,7 @@ function PageContent({
   if (page === 'connection') return <ConnectionPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'risk') return <RiskPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'settings') return <ApplicationSettingsPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} onSettingsChanged={onSettingsChanged} />;
-  if (page === 'employees') return <EmployeesPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} pageQuery={pageQuery} onQueryChange={onQueryChange} />;
+  if (page === 'employees') return <EmployeesPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} pageQuery={pageQuery} onQueryChange={onQueryChange} user={user} />;
   if (page === 'users') return <MembersPage
     data={pageData}
     loading={pageLoading}

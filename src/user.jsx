@@ -193,7 +193,7 @@ function UserAuth({ branding, onAuthenticate, initialMode = 'welcome', token = '
       </section>
       <section className="portal-auth-main">
         <div className="portal-auth-card">
-          {mode === 'welcome' && <div className="portal-welcome"><p className="portal-kicker">MEMBER PORTAL</p><h2>Welcome to {branding.organizationName}</h2><p className="portal-auth-subtitle">Sign in to your account or create one to get started.</p><button className="portal-primary-button" onClick={() => setMode('login')}>Sign in</button><button className="portal-secondary-button portal-welcome-register" onClick={() => setMode('register')}>Create an account</button></div>}
+          {mode === 'welcome' && <div className="portal-welcome"><p className="portal-kicker">MEMBER PORTAL</p><h2>Welcome to {branding.organizationName}</h2><p className="portal-auth-subtitle">{branding.registrationEnabled === false ? 'Sign in to your existing account.' : 'Sign in to your account or create one to get started.'}</p><button className="portal-primary-button" onClick={() => setMode('login')}>Sign in</button>{branding.registrationEnabled !== false && <button className="portal-secondary-button portal-welcome-register" onClick={() => setMode('register')}>Create an account</button>}</div>}
           {mode === 'sent' && <div className="portal-message-state"><div className="portal-message-icon" aria-hidden="true">✉</div><p className="portal-kicker">ONE LAST STEP</p><h2>Check your email</h2><p className="portal-auth-subtitle">{feedback}</p><p className="portal-auth-subtitle">The verification link is valid for one hour. If you don't see it, check your spam folder.</p>{error && <p className="portal-error" role="alert">{error}</p>}<button className="portal-secondary-button" onClick={async () => { setBusy(true); setError(''); try { const result = await userApi('/api/user/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }); setFeedback(result.message); } catch (requestError) { setError(requestError.message); } finally { setBusy(false); } }} disabled={busy}>{busy ? 'Sending…' : 'Resend verification email'}</button></div>}
           {mode === 'forgot-sent' && <div className="portal-message-state"><div className="portal-message-icon" aria-hidden="true">✉</div><p className="portal-kicker">PASSWORD RECOVERY</p><h2>Check your inbox</h2><p className="portal-auth-subtitle">{feedback}</p>{error && <p className="portal-error" role="alert">{error}</p>}<button className="portal-text-button" onClick={() => { setMode('login'); setError(''); }}>Back to sign in</button></div>}
           {!['welcome', 'sent', 'forgot-sent'].includes(mode) && <>
@@ -214,7 +214,7 @@ function UserAuth({ branding, onAuthenticate, initialMode = 'welcome', token = '
             </form>
             {mode === 'login' && <p className="portal-switch"><button type="button" onClick={() => { setMode('forgot'); setError(''); setFeedback(''); }}>Forgot password?</button></p>}
             <p className="portal-switch">{mode === 'login'
-              ? <>New here? <button type="button" onClick={() => { setMode('register'); setError(''); setFeedback(''); }}>Create an account</button></>
+              ? branding.registrationEnabled === false ? null : <>New here? <button type="button" onClick={() => { setMode('register'); setError(''); setFeedback(''); }}>Create an account</button></>
               : mode === 'register'
                 ? <>Already have an account? <button type="button" onClick={() => { setMode('login'); setError(''); setFeedback(''); }}>Sign in</button></>
                 : <button type="button" onClick={() => { setMode('login'); setError(''); setFeedback(''); }}>Back to sign in</button>}
@@ -661,7 +661,7 @@ function UserPortalApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [notificationAlert, setNotificationAlert] = useState(null);
-  const [branding, setBranding] = useState({ organizationName: 'G-Squad', appLogo: '' });
+  const [branding, setBranding] = useState({ organizationName: 'G-Squad', appLogo: '', registrationEnabled: true });
   const knownNotificationIds = useRef(null);
   const dashboardRequestId = useRef(0);
   const dashboardRequestInFlight = useRef(false);
@@ -686,7 +686,7 @@ function UserPortalApp() {
 
   useEffect(() => {
     userApi('/api/app-settings')
-      .then(({ settings }) => setBranding((current) => ({ ...current, ...settings })))
+      .then(({ settings, registrationEnabled }) => setBranding((current) => ({ ...current, ...settings, registrationEnabled })))
       .catch((requestError) => setError(requestError.message));
   }, []);
 

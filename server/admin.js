@@ -15,6 +15,10 @@ const validPermissions = new Set([
   'transactions.read',
   'transactions.review',
   'audit.read',
+  'employees.manage',
+  'settings.manage',
+  'support.manage',
+  'alerts.manage',
 ]);
 
 const defaultSettings = {
@@ -23,6 +27,8 @@ const defaultSettings = {
   defaultCurrency: 'USD',
   timezone: 'UTC',
   appLogo: '',
+  memberRegistrationEnabled: true,
+  notificationCategories: { account: true, wallet: true, security: true },
 };
 
 const configurableSettings = new Set(Object.keys(defaultSettings));
@@ -51,6 +57,16 @@ router.use((request, response, next) => {
     permission = request.method === 'POST' ? 'transactions.review' : 'transactions.read';
   } else if (resource === 'audit') {
     permission = 'audit.read';
+  } else if (resource === 'employees') {
+    permission = request.method === 'GET' ? 'employees.manage' : 'employees.manage';
+  } else if (resource === 'settings') {
+    permission = request.method === 'GET' ? 'settings.manage' : 'settings.manage';
+  } else if (resource === 'risk-settings') {
+    permission = 'settings.manage';
+  } else if (resource === 'support') {
+    permission = request.method === 'GET' ? 'support.manage' : 'support.manage';
+  } else if (resource === 'notifications') {
+    permission = request.method === 'GET' ? 'alerts.manage' : 'alerts.manage';
   }
 
   const permissions = request.admin.permissions || [];
@@ -68,6 +84,9 @@ router.use((request, response, next) => {
 });
 
 async function notifyMember(userId, category, title, message) {
+  const categoriesSetting = await db.prepare("SELECT value_json FROM app_settings WHERE key = 'notificationCategories'").get();
+  const categories = categoriesSetting ? parseJson(categoriesSetting.value_json, {}) : { account: true, wallet: true, security: true };
+  if (categories[category] === false) return;
   await db.prepare(`
     INSERT INTO user_notifications (id, user_id, category, title, message)
     VALUES (?, ?, ?, ?, ?)
@@ -132,6 +151,11 @@ function validSettings(value) {
     return false;
   }
   if (value.appLogo !== undefined && typeof value.appLogo !== 'string') return false;
+  if (value.memberRegistrationEnabled !== undefined && typeof value.memberRegistrationEnabled !== 'boolean') return false;
+  if (value.notificationCategories !== undefined
+      && (!value.notificationCategories || typeof value.notificationCategories !== 'object'
+        || Array.isArray(value.notificationCategories)
+        || ['account', 'wallet', 'security'].some((category) => typeof value.notificationCategories[category] !== 'boolean'))) return false;
   if (value.appLogo) {
     const match = value.appLogo.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})$/);
     if (!match || match[2].length > Math.ceil(MAX_LOGO_BYTES / 3) * 4) return false;
@@ -239,6 +263,8 @@ router.put('/settings', async (request, response) => {
     defaultCurrency: settings.defaultCurrency.toUpperCase(),
     timezone: settings.timezone.trim(),
     appLogo: settings.appLogo === undefined ? (await readSettings()).appLogo : settings.appLogo,
+    memberRegistrationEnabled: settings.memberRegistrationEnabled ?? (await readSettings()).memberRegistrationEnabled,
+    notificationCategories: settings.notificationCategories || (await readSettings()).notificationCategories,
   };
   const saveSettings = db.transaction(async () => {
     for (const key of configurableSettings) {
@@ -345,6 +371,58 @@ router.put('/risk-settings', async (request, response) => {
       details: { emergencyStopEnabled: settings.emergencyStopEnabled },
       request,
     });
+
+    router.patch('/support/:requestId', async (request, response) => {
+      const status = request.body?.status;
+      const responseText = typeof request.body?.response === 'string' ? request.body.response.trim() : '';
+      const assignedAdminId = request.body?.assignedAdminId ?? null;
+      if (!['open', 'in_progress', 'resolved'].includes(status)
+          || responseText.length > 2000
+          || (assignedAdminId !== null && (typeof assignedAdminId !== 'string'
+            || !await db.prepare('SELECT id FROM admin_users WHERE id = ?').get(assignedAdminId)))) {
+        return response.status(400).json({ error: 'Support update is invalid.' });
+      }
+      const supportRequest = await db.prepare(`
+        SELECT id, user_id AS userId FROM support_requests WHERE id = ?
+      `).get(request.params.requestId);
+      if (!supportRequest) return response.status(404).json({ error: 'Support request not found.' });
+      await db.transaction(async () => {
+        await db.prepare(`
+          UPDATE support_requests SET status = ?, response = ?, assigned_admin_id = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(status, responseText || null, assignedAdminId, supportRequest.id);
+        await audit({
+          adminId: request.admin.id,
+          action: 'support_request.updated',
+          targetType: 'support_request',
+          targetId: supportRequest.id,
+          details: { status, assignedAdminId },
+          request,
+        });
+        if (responseText) {
+          await notifyMember(supportRequest.userId, 'account', 'Support request updated', `An administrator responded to your support request: ${responseText}`);
+        }
+      })();
+      return response.json({ updated: true });
+    });
+
+    router.post('/notifications/:notificationId/acknowledge', async (request, response) => {
+      const result = await db.prepare(`
+        UPDATE notifications SET acknowledged_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND acknowledged_at IS NULL
+      `).run(request.params.notificationId);
+      if (!result.changes && !await db.prepare('SELECT id FROM notifications WHERE id = ?').get(request.params.notificationId)) {
+        return response.status(404).json({ error: 'Alert not found.' });
+      }
+      await audit({
+        adminId: request.admin.id,
+        action: 'alert.acknowledged',
+        targetType: 'notification',
+        targetId: request.params.notificationId,
+        request,
+      });
+      return response.json({ acknowledged: true });
+    });
   })();
   return response.json({ riskSettings: settings });
 });
@@ -362,6 +440,10 @@ router.post('/employees', async (request, response) => {
       || (permissions !== undefined && (!Array.isArray(permissions)
         || permissions.some((permission) => !validPermissions.has(permission))))) {
     return response.status(400).json({ error: 'Enter a valid username, a password of at least 14 characters, and an available role.' });
+  }
+  if (request.admin.role !== 'super_admin' && (role !== 'admin'
+      || (permissions || []).some((permission) => !(request.admin.permissions || []).includes(permission)))) {
+    return response.status(403).json({ error: 'You may only create scoped admins with permissions you already hold.' });
   }
 
   const id = randomUUID();
@@ -403,6 +485,10 @@ router.patch('/employees/:employeeId/permissions', async (request, response) => 
     return response.status(400).json({ error: 'Super-admin permissions cannot be customized.' });
   }
   const assignedPermissions = [...new Set(permissions)];
+  if (request.admin.role !== 'super_admin'
+      && assignedPermissions.some((permission) => !(request.admin.permissions || []).includes(permission))) {
+    return response.status(403).json({ error: 'You may only assign permissions you already hold.' });
+  }
   await db.transaction(async () => {
     await db.prepare('UPDATE admin_users SET permissions_json = ? WHERE id = ?')
       .run(JSON.stringify(assignedPermissions), employee.id);
@@ -898,9 +984,11 @@ const listQueries = {
   support: `
     SELECT support_requests.id, users.account_id AS accountId, users.display_name AS userName,
       support_requests.subject, support_requests.message, support_requests.status,
-      support_requests.response, support_requests.created_at AS createdAt,
+      support_requests.response, support_requests.assigned_admin_id AS assignedAdminId,
+      assigned_admin.username AS assignedAdmin, support_requests.created_at AS createdAt,
       support_requests.updated_at AS updatedAt
     FROM support_requests JOIN users ON users.id = support_requests.user_id
+    LEFT JOIN admin_users AS assigned_admin ON assigned_admin.id = support_requests.assigned_admin_id
     WHERE users.is_demo = 0
     ORDER BY support_requests.created_at DESC
   `,

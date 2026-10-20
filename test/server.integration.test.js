@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { createHmac } = require('node:crypto');
 const { mkdtempSync, rmSync } = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -102,6 +103,30 @@ function linkFromEmail(message, key) {
 
 function tokenFromEmail(message, key) {
   return linkFromEmail(message, key).searchParams.get(key);
+}
+
+function currentTotp(secret) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let buffer = 0;
+  let bits = 0;
+  const bytes = [];
+  for (const character of secret) {
+    buffer = (buffer << 5) | alphabet.indexOf(character);
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((buffer >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+  const digest = createHmac('sha1', Buffer.from(bytes)).update(counter).digest();
+  const offset = digest[digest.length - 1] & 15;
+  const number = ((digest[offset] & 127) << 24)
+    | ((digest[offset + 1] & 255) << 16)
+    | ((digest[offset + 2] & 255) << 8)
+    | (digest[offset + 3] & 255);
+  return String(number % 1_000_000).padStart(6, '0');
 }
 
 test('admin login, employee access, configuration, protected APIs, and logout work end to end', async (context) => {
@@ -231,11 +256,15 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
       defaultCurrency: 'EUR',
       timezone: 'Europe/London',
       appLogo: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/xD8AAAAASUVORK5CYII=',
+      memberRegistrationEnabled: false,
+      notificationCategories: { account: true, wallet: false, security: true },
     } }),
   });
   assert.equal(saveSettings.status, 200);
   const savedSettings = (await saveSettings.json()).settings;
   assert.equal(savedSettings.defaultCurrency, 'EUR');
+  assert.equal(savedSettings.memberRegistrationEnabled, false);
+  assert.deepEqual(savedSettings.notificationCategories, { account: true, wallet: false, security: true });
   assert.equal(savedSettings.appLogo, 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/xD8AAAAASUVORK5CYII=');
   const malformedSettings = await fetch(`${origin}/api/admin/settings`, {
     method: 'PUT',
@@ -251,6 +280,28 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     organizationName: 'G-Squad Operations',
     appLogo: savedSettings.appLogo,
   });
+  const blockedRegistration = await fetch(`${origin}/api/user/register`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Blocked Signup',
+      email: 'blocked-signup@example.com',
+      password: adminPassword,
+      confirmPassword: adminPassword,
+      termsAccepted: true,
+    }),
+  });
+  assert.equal(blockedRegistration.status, 403);
+  const restoreApplicationSettings = await fetch(`${origin}/api/admin/settings`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: {
+      ...savedSettings,
+      memberRegistrationEnabled: true,
+      notificationCategories: { account: true, wallet: true, security: true },
+    } }),
+  });
+  assert.equal(restoreApplicationSettings.status, 200);
 
   const saveRiskSettings = await fetch(`${origin}/api/admin/risk-settings`, {
     method: 'PUT',
@@ -489,8 +540,55 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(userSupport.status, 201);
   const supportRequest = await userSupport.json();
   assert.equal(supportRequest.request.status, 'open');
+  const updateSupport = await fetch(`${origin}/api/admin/support/${encodeURIComponent(supportRequest.request.id)}`, {
+    method: 'PATCH',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'in_progress', response: 'We are reviewing your request.' }),
+  });
+  assert.equal(updateSupport.status, 200);
   const supportDashboard = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
-  assert.equal((await supportDashboard.json()).support.length, 1);
+  const supportDashboardBody = await supportDashboard.json();
+  assert.equal(supportDashboardBody.support.length, 1);
+  assert.equal(supportDashboardBody.support[0].status, 'in_progress');
+  assert.equal(supportDashboardBody.support[0].response, 'We are reviewing your request.');
+  const supportEmployeeCreate = await fetch(`${origin}/api/admin/employees`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: 'support-operator',
+      password: 'strong-support-operator-password-48!',
+      role: 'admin',
+      permissions: ['support.manage', 'alerts.manage', 'settings.manage', 'employees.manage'],
+    }),
+  });
+  assert.equal(supportEmployeeCreate.status, 201);
+  const supportEmployeeLogin = await fetch(`${origin}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin, 'X-Forwarded-For': '198.51.100.30' },
+    body: JSON.stringify({ username: 'support-operator', password: 'strong-support-operator-password-48!' }),
+  });
+  assert.equal(supportEmployeeLogin.status, 200);
+  const supportEmployeeCookie = supportEmployeeLogin.headers.getSetCookie()[0].split(';')[0];
+  const scopedSupportList = await fetch(`${origin}/api/admin/support`, { headers: { Cookie: supportEmployeeCookie } });
+  assert.equal(scopedSupportList.status, 200);
+  const scopedSupportRequest = (await scopedSupportList.json()).records[0];
+  const scopedSupportUpdate = await fetch(`${origin}/api/admin/support/${encodeURIComponent(scopedSupportRequest.id)}`, {
+    method: 'PATCH',
+    headers: { Cookie: supportEmployeeCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'resolved', response: 'This request is now resolved.' }),
+  });
+  assert.equal(scopedSupportUpdate.status, 200);
+  const employeeCannotPromote = await fetch(`${origin}/api/admin/employees`, {
+    method: 'POST',
+    headers: { Cookie: supportEmployeeCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: 'unauthorized-supervisor',
+      password: 'strong-unauthorized-supervisor-92!',
+      role: 'super_admin',
+      permissions: [],
+    }),
+  });
+  assert.equal(employeeCannotPromote.status, 403);
 
   const secondMemberRegister = await fetch(`${origin}/api/user/register`, {
     method: 'POST',
@@ -742,12 +840,56 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const afterUserLogout = await fetch(`${origin}/api/user/me`, { headers: { Cookie: resetUserCookie } });
   assert.equal(afterUserLogout.status, 401);
 
+  const mfaSetup = await fetch(`${origin}/api/auth/mfa/setup`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(mfaSetup.status, 200);
+  const mfaSetupBody = await mfaSetup.json();
+  const mfaCode = currentTotp(mfaSetupBody.secret);
+  const enableMfa = await fetch(`${origin}/api/auth/mfa/enable`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ secret: mfaSetupBody.secret, code: mfaCode }),
+  });
+  assert.equal(enableMfa.status, 200);
+  const recoveryCodes = (await enableMfa.json()).recoveryCodes;
+  assert.equal(recoveryCodes.length, 10);
+  const mfaLogin = await fetch(`${origin}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin, 'X-Forwarded-For': '198.51.100.29' },
+    body: JSON.stringify({ username: 'integration-admin', password: adminPassword }),
+  });
+  assert.equal(mfaLogin.status, 200);
+  const mfaLoginBody = await mfaLogin.json();
+  assert.equal(mfaLoginBody.mfaRequired, true);
+  const finishMfaLogin = await fetch(`${origin}/api/auth/mfa/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin, 'X-Forwarded-For': '198.51.100.29' },
+    body: JSON.stringify({ challenge: mfaLoginBody.challenge, code: currentTotp(mfaSetupBody.secret) }),
+  });
+  assert.equal(finishMfaLogin.status, 200);
+  const mfaCookie = finishMfaLogin.headers.getSetCookie()[0].split(';')[0];
+  const adminSessions = await fetch(`${origin}/api/auth/sessions`, { headers: { Cookie: mfaCookie } });
+  assert.equal(adminSessions.status, 200);
+  const sessions = (await adminSessions.json()).sessions;
+  const oldSession = sessions.find((session) => !session.current);
+  assert.ok(oldSession, 'previous admin session should be listed');
+  const revokeOldSession = await fetch(`${origin}/api/auth/sessions/${encodeURIComponent(oldSession.id)}`, {
+    method: 'DELETE',
+    headers: { Cookie: mfaCookie, Origin: origin },
+  });
+  assert.equal(revokeOldSession.status, 200);
+  const revokedSessionCheck = await fetch(`${origin}/api/auth/me`, { headers: { Cookie: cookie } });
+  assert.equal(revokedSessionCheck.status, 401, `Revoked session ${JSON.stringify(oldSession)} remained active.`);
+
   const logoutResponse = await fetch(`${origin}/api/auth/logout`, {
     method: 'POST',
-    headers: { Cookie: cookie, Origin: origin },
+    headers: { Cookie: mfaCookie, Origin: origin },
   });
   assert.equal(logoutResponse.status, 204);
-  const afterLogout = await fetch(`${origin}/api/auth/me`, { headers: { Cookie: cookie } });
+  const afterLogout = await fetch(`${origin}/api/auth/me`, { headers: { Cookie: mfaCookie } });
   assert.equal(afterLogout.status, 401);
 
   await stopProcess(child);
@@ -766,7 +908,15 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     body: JSON.stringify({ username: 'integration-admin', password: adminPassword }),
   });
   assert.equal(productionLogin.status, 200);
-  const productionCookie = productionLogin.headers.getSetCookie()[0].split(';')[0];
+  const productionChallenge = await productionLogin.json();
+  assert.equal(productionChallenge.mfaRequired, true);
+  const productionMfa = await fetch(`${origin}/api/auth/mfa/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin, 'X-Forwarded-For': '198.51.100.31' },
+    body: JSON.stringify({ challenge: productionChallenge.challenge, code: recoveryCodes[0] }),
+  });
+  assert.equal(productionMfa.status, 200);
+  const productionCookie = productionMfa.headers.getSetCookie()[0].split(';')[0];
   const persistedDerivCredentials = await fetch(`${origin}/api/admin/settings`, { headers: { Cookie: productionCookie } });
   const persistedDerivStatus = await persistedDerivCredentials.json();
   assert.equal(persistedDerivStatus.derivAppId, '123456');

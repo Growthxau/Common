@@ -258,7 +258,9 @@ h2 { margin-bottom: 5px; color: #29364a; font: 700 13px Manrope, "DM Sans", sans
 .bulk-review-actions { display: flex; gap: 7px; margin-left: auto; }
 .bulk-review-actions .button { min-height: 29px; }
 .bulk-review-note { display: grid; min-width: 200px; gap: 4px; color: #778397; font-size: 8px; }
-.bulk-review-note input, .record-filters select { min-height: 32px; padding: 0 8px; border: 1px solid #e1e7ef; border-radius: 5px; background: white; color: #526075; font-size: 9px; }
+.bulk-review-note input, .record-filters select, .support-review-actions input, .support-review-actions select { min-height: 32px; padding: 0 8px; border: 1px solid #e1e7ef; border-radius: 5px; background: white; color: #526075; font-size: 9px; }
+.support-review-actions { display: grid; min-width: 220px; gap: 4px; }
+.support-review-actions small { color: var(--text-muted); overflow-wrap: anywhere; }
 .bulk-review-message { margin: 0; padding: 9px 14px; color: #278861; font-size: 9px; }
 .bulk-review-message[role="status"] { color: #526075; }
 .record-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

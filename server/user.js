@@ -98,6 +98,10 @@ function createAccountId() {
 }
 
 async function register(request, response) {
+  const registrationSetting = await db.prepare("SELECT value_json FROM app_settings WHERE key = 'memberRegistrationEnabled'").get();
+  if (registrationSetting && JSON.parse(registrationSetting.value_json) === false) {
+    return response.status(403).json({ error: 'New member registration is currently disabled.' });
+  }
   const name = typeof request.body?.name === 'string' ? request.body.name.trim() : '';
   const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : '';
   const password = typeof request.body?.password === 'string' ? request.body.password : '';
