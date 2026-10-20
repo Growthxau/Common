@@ -6,13 +6,25 @@ const cookieParser = require('cookie-parser');
 const { rateLimit } = require('express-rate-limit');
 const db = require('./database');
 const adminRouter = require('./admin');
-const { audit, login, logout, requireAdmin } = require('./auth');
+const { adminSessionDurationMs, audit, login, logout, requireAdmin } = require('./auth');
+const { bootstrapAdmin } = require('./admin-bootstrap');
 const userModule = require('./user');
 const { getRequestOrigin } = require('./origin');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
+let applicationReady;
+
+function ensureApplicationReady() {
+  if (!applicationReady) {
+    applicationReady = bootstrapAdmin().catch((error) => {
+      console.error('Could not initialize administrator:', error.message);
+      throw error;
+    });
+  }
+  return applicationReady;
+}
 
 if (production) process.env.NODE_ENV = 'production';
 
@@ -21,6 +33,9 @@ app.use((request, response, next) => {
   response.locals.requestId = requestId;
   response.set('X-Request-Id', requestId);
   next();
+});
+app.use((request, response, next) => {
+  ensureApplicationReady().then(() => next(), next);
 });
 
 app.disable('x-powered-by');
@@ -105,7 +120,7 @@ app.use(express.json({ limit: '2mb', strict: true }));
 app.use(cookieParser());
 
 app.get('/api/health', async (request, response) => {
-  await db.ready;
+  await ensureApplicationReady();
   return response.json({
   status: 'ok',
   tradingEnabled: false,
@@ -128,7 +143,14 @@ app.get('/api/app-settings', async (request, response, next) => {
 
 app.post('/api/auth/login', login);
 app.get('/api/auth/me', requireAdmin, (request, response) => {
-  response.json({ user: request.admin, tradingEnabled: false, paymentsEnabled: false });
+  response.json({
+    user: {
+      ...request.admin,
+      sessionDurationMinutes: adminSessionDurationMs() / 60_000,
+    },
+    tradingEnabled: false,
+    paymentsEnabled: false,
+  });
 });
 app.post('/api/auth/logout', logout);
 app.post('/api/user/register', userRegistrationLimiter, userModule.register);

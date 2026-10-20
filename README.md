@@ -17,15 +17,9 @@ G-Squad is a Node.js, Express, and React application with separate member and ad
    npm install
    ```
 
-2. Copy `.env.example` to `.env`, then set a unique admin username and a strong password of at least 14 characters. Keep `.env` out of source control. Set `GSQUAD_SECRETS_KEY` to a generated base64-encoded 32-byte key before saving a Deriv PAT through the admin UI. Protect and back up this key separately from the database; losing it makes stored PATs unrecoverable. Deriv credentials do not activate a connection.
+2. Copy `.env.example` to `.env`, then set a unique admin username and a strong password of at least 14 characters. On first startup, the app automatically creates the initial super-admin from these variables when the database has no admin accounts; no separate bootstrap command is needed. Keep `.env` out of source control. Set `GSQUAD_SECRETS_KEY` to a generated base64-encoded 32-byte key before saving a Deriv PAT through the admin UI. Protect and back up this key separately from the database; losing it makes stored PATs unrecoverable. Deriv credentials do not activate a connection.
 
-3. Bootstrap a super-admin:
-
-   ```sh
-   npm run admin:create
-   ```
-
-   The command reads `ADMIN_USERNAME` and `ADMIN_PASSWORD`, stores a scrypt password hash, and does not create a public registration route. Additional staff accounts are created by a super-admin from **Employee access**.
+   The first-admin credentials are only used when the admin table is empty. Later deployments do not replace or reset existing admin accounts. Additional staff accounts are created by a super-admin from **Employee access**.
 
 4. Start the development server:
 
@@ -48,9 +42,10 @@ Set `NODE_ENV=production` when deploying behind TLS. On Vercel, the app detects 
 
 ## Administration
 
-- **Employee access:** Super-admins can provision employee accounts and assign either `admin` (read-only operational access) or `super_admin` (full administrative access). Initial passwords must be at least 14 characters.
-- **Member management:** Super-admins can create members with email verification (members set their initial password through **Forgot password?** after verifying), find an exact account ID or email, edit the member name/email/status, set a replacement password, and review recent deposit, withdrawal, wallet-ledger, trade, support, and account-event history. Deleting a member deactivates the account, revokes sessions, and preserves its financial and audit records.
-- **Transaction review:** Super-admins can select and approve or reject up to 100 pending deposit/withdrawal records at once. This records the review decision only; it does not credit wallets or initiate payouts. Payment processing remains disabled.
+- **Employee access:** Super-admins can provision employee accounts and assign either `admin` (scoped access) or `super_admin` (full administrative access). Scoped permissions cover member read/manage/export, transaction read/review, and audit read; an employee can be assigned multiple scopes. Initial passwords must be at least 14 characters.
+- **Member management:** Super-admins can create members with email verification (members set their initial password through **Forgot password?** after verifying), search and paginate member lists, find an exact account ID or email, edit member information, set a replacement password, resend verification or password-reset links, reactivate accounts, and review recent deposit, withdrawal, wallet-ledger, trade, support, and account-event history. Member exports are audited and omit password hashes and action tokens. Deleting a member deactivates the account, revokes sessions, and preserves its financial and audit records.
+- **Transaction review:** Super-admins can search and paginate deposit/withdrawal records, select and approve or reject up to 100 pending records at once, and record review notes. Rejections require a reason. Members receive in-portal notices for account, password, and transaction-review events (subject to their notification preferences). This records the review decision only; it does not credit wallets or initiate payouts. Payment processing remains disabled.
+- **Admin sign-in:** Failed admin sign-ins are tracked persistently; five failures within 15 minutes lock that username for 15 minutes and create a security notification. Set `ADMIN_SESSION_DURATION_MINUTES` to an integer from 15 through 720 (default 60) to configure admin session lifetime.
 - **Application settings:** Super-admins can configure organization name, support email, default currency, timezone, a PNG/JPEG/WebP application logo (up to 1 MB), and Deriv App ID. The logo is used throughout both portals and is shown by itself on the eight-second splash screen. A Deriv PAT can be replaced through the UI; it is encrypted with AES-256-GCM before storage, masked from API responses, and audited without recording its value. The encryption key must be supplied by the deployment environment. Deriv connection testing is not implemented.
 - **Risk management:** Super-admins can record daily loss/profit targets, combined-stake and exposure limits, and the emergency-stop setting. These settings do not enable execution.
 - **Audit:** Sign-ins, employee and member administration, transaction review, and configuration changes are recorded in the append-only audit log.
@@ -95,14 +90,8 @@ npm test
    ```
 
    Run this once against a new, empty Neon database. The migration copies accounts, sessions, settings, audit records, and wallet/trading records. Do not run it again on a database that already contains those rows.
-5. For a fresh Neon database that did not receive migrated accounts, create the first administrator:
+5. For a fresh Neon database, set `ADMIN_USERNAME` and `ADMIN_PASSWORD` as Vercel environment variables (Production and any other deployment environments that need their own empty database). On the first API request, the app automatically creates the initial super-admin and initializes the schema. If you migrated an existing SQLite database, its admin accounts are preserved and the bootstrap credentials do not overwrite them.
 
-   ```sh
-   npm run admin:create
-   ```
-
-   Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` in the local `.env` first. The admin account is stored in Neon and can then sign in at `/admin`. If you migrated an existing SQLite database, its administrator accounts were copied too; sign in with an existing account instead of running this command.
-
-For Vercel deployments, `DATABASE_URL` is required; the app fails clearly rather than using an ephemeral local SQLite file. Keep the Neon connection string private. Set Vercel’s `DATABASE_URL` using the Neon Marketplace integration rather than committing it to the repository.
+For Vercel deployments, `DATABASE_URL`, `ADMIN_USERNAME`, and `ADMIN_PASSWORD` must be configured when the target database has no admin account. If bootstrap credentials are missing or invalid on an empty database, the first request fails with a configuration error rather than creating a default or publicly known password. The app fails clearly rather than using an ephemeral local SQLite file. Keep these values private. Set Vercel’s `DATABASE_URL` using the Neon Marketplace integration rather than committing it to the repository.
 
 If an API request fails with “The request could not be completed,” copy the reference ID shown in the response, then find the matching `requestId` in the Vercel function logs for `api/index.js`. Logs include the error type and database/runtime error code, but not raw error messages or credentials.

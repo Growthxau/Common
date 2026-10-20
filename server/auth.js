@@ -3,10 +3,31 @@ const { promisify } = require('node:util');
 const db = require('./database');
 
 const scryptAsync = promisify(scrypt);
-const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
 const SESSION_COOKIE = 'gsquad_session';
+const ADMIN_LOCKOUT_FAILURES = 5;
+const ADMIN_LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
+const ADMIN_LOCKOUT_DURATION_MS = 15 * 60 * 1000;
 const DUMMY_SALT = Buffer.alloc(16, 7);
 const DUMMY_HASH = scryptSync('not-a-real-password', DUMMY_SALT, 64);
+
+function adminSessionDurationMs() {
+  const configuredMinutes = Number(process.env.ADMIN_SESSION_DURATION_MINUTES || 60);
+  if (!Number.isInteger(configuredMinutes) || configuredMinutes < 15 || configuredMinutes > 720) {
+    throw new Error('ADMIN_SESSION_DURATION_MINUTES must be an integer between 15 and 720.');
+  }
+  return configuredMinutes * 60 * 1000;
+}
+
+function parsePermissions(value) {
+  try {
+    const permissions = JSON.parse(value || '[]');
+    return Array.isArray(permissions) && permissions.every((item) => typeof item === 'string')
+      ? permissions
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
@@ -52,7 +73,7 @@ function cookieOptions() {
     sameSite: 'strict',
     secure: process.env.NODE_ENV === 'production',
     path: '/',
-    maxAge: SESSION_DURATION_MS,
+    maxAge: adminSessionDurationMs(),
   };
 }
 
@@ -70,21 +91,54 @@ async function login(request, response) {
     return response.status(400).json({ error: 'Invalid username or password.' });
   }
 
-  const admin = await db.prepare('SELECT id, username, password_hash, role FROM admin_users WHERE username = ?')
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const attempt = await db.prepare('SELECT failure_count, window_started_at, locked_until FROM admin_login_attempts WHERE username = ?')
+    .get(username);
+  if (attempt?.locked_until && attempt.locked_until > nowIso) {
+    await audit({ action: 'admin.login_blocked', targetType: 'admin_user', details: { username }, request });
+    return response.status(429).json({ error: 'Sign-in is temporarily locked after repeated failed attempts. Try again in 15 minutes.' });
+  }
+
+  const admin = await db.prepare('SELECT id, username, password_hash, role, permissions_json FROM admin_users WHERE username = ?')
     .get(username);
   const passwordMatches = await verifyPassword(password, admin?.password_hash);
   if (!admin || !passwordMatches) {
+    const windowStart = attempt?.window_started_at
+      && new Date(attempt.window_started_at).getTime() > now.getTime() - ADMIN_LOCKOUT_WINDOW_MS
+      ? attempt.window_started_at
+      : nowIso;
+    const failures = windowStart === attempt?.window_started_at ? Number(attempt.failure_count) + 1 : 1;
+    const lockedUntil = failures >= ADMIN_LOCKOUT_FAILURES
+      ? new Date(now.getTime() + ADMIN_LOCKOUT_DURATION_MS).toISOString()
+      : null;
+    await db.prepare(`
+      INSERT INTO admin_login_attempts (username, failure_count, window_started_at, locked_until)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(username) DO UPDATE SET
+        failure_count = excluded.failure_count,
+        window_started_at = excluded.window_started_at,
+        locked_until = excluded.locked_until
+    `).run(username, failures, windowStart, lockedUntil);
     await audit({
       action: 'admin.login_failed',
       targetType: 'admin_user',
       details: { username: username.slice(0, 100) },
       request,
     });
+    if (failures === ADMIN_LOCKOUT_FAILURES) {
+      await db.prepare(`
+        INSERT INTO notifications (id, severity, category, title, message)
+        VALUES (?, 'warning', 'security', 'Repeated admin sign-in failures',
+          'An admin username reached the failed sign-in threshold and was temporarily locked.')
+      `).run(randomUUID());
+    }
     return response.status(401).json({ error: 'Invalid username or password.' });
   }
 
   const token = randomBytes(32).toString('base64url');
-  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
+  const expiresAt = new Date(Date.now() + adminSessionDurationMs()).toISOString();
+  await db.prepare('DELETE FROM admin_login_attempts WHERE username = ?').run(username);
   await db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(new Date().toISOString());
   await db.prepare('INSERT INTO admin_sessions (token_hash, admin_id, expires_at) VALUES (?, ?, ?)')
     .run(hashToken(token), admin.id, expiresAt);
@@ -92,7 +146,14 @@ async function login(request, response) {
   await audit({ adminId: admin.id, action: 'admin.login_success', request });
 
   response.cookie(SESSION_COOKIE, token, cookieOptions());
-  return response.json({ user: { id: admin.id, username: admin.username, role: admin.role } });
+  return response.json({
+    user: {
+      id: admin.id,
+      username: admin.username,
+      role: admin.role,
+      permissions: parsePermissions(admin.permissions_json),
+    },
+  });
 }
 
 async function requireAdmin(request, response, next) {
@@ -102,7 +163,7 @@ async function requireAdmin(request, response, next) {
   }
 
   const session = await db.prepare(`
-    SELECT admin_users.id, admin_users.username, admin_users.role
+    SELECT admin_users.id, admin_users.username, admin_users.role, admin_users.permissions_json
     FROM admin_sessions
     JOIN admin_users ON admin_users.id = admin_sessions.admin_id
     WHERE admin_sessions.token_hash = ? AND admin_sessions.expires_at > ?
@@ -113,6 +174,8 @@ async function requireAdmin(request, response, next) {
     clearSessionCookie(response);
     return response.status(401).json({ error: 'Session expired. Please sign in again.' });
   }
+  session.permissions = parsePermissions(session.permissions_json);
+  delete session.permissions_json;
   request.admin = session;
   return next();
 }
@@ -127,4 +190,13 @@ async function logout(request, response) {
   return response.status(204).end();
 }
 
-module.exports = { audit, hashPassword, hashToken, login, logout, requireAdmin, verifyPassword };
+module.exports = {
+  adminSessionDurationMs,
+  audit,
+  hashPassword,
+  hashToken,
+  login,
+  logout,
+  requireAdmin,
+  verifyPassword,
+};

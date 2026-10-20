@@ -9,6 +9,31 @@ const navigation = [
   { label: 'OPERATIONS', items: [{ id: 'deposits', name: 'Deposits', icon: '↓' }, { id: 'withdrawals', name: 'Withdrawals', icon: '↑' }, { id: 'ledger', name: 'Wallet ledger', icon: '▤' }, { id: 'notifications', name: 'Notifications', icon: '♧' }, { id: 'support', name: 'Support', icon: '?' }] },
   { label: 'SYSTEM', items: [{ id: 'employees', name: 'Employee access', icon: '♙' }, { id: 'settings', name: 'Application settings', icon: '⚙' }, { id: 'security', name: 'Security & audit', icon: '▤' }] },
 ];
+const permissionChoices = [
+  ['users.read', 'View member records and activity'],
+  ['users.manage', 'Create, edit, suspend, and recover members'],
+  ['users.export', 'Export member data'],
+  ['transactions.read', 'View deposit and withdrawal records'],
+  ['transactions.review', 'Approve or reject transactions'],
+  ['audit.read', 'View audit history'],
+];
+
+function hasAdminPermission(user, permission) {
+  if (user.role === 'super_admin') return true;
+  const permissions = user.permissions || [];
+  if (permission === 'users.read') return permissions.includes('users.read') || permissions.includes('users.manage') || permissions.includes('users.export');
+  if (permission === 'transactions.read') return permissions.includes('transactions.read') || permissions.includes('transactions.review');
+  return permissions.includes(permission);
+}
+
+function canAccessPage(user, page) {
+  if (user.role === 'super_admin') return true;
+  if (page === 'users') return hasAdminPermission(user, 'users.read');
+  if (page === 'deposits' || page === 'withdrawals') return hasAdminPermission(user, 'transactions.read');
+  if (page === 'security') return hasAdminPermission(user, 'audit.read');
+  if (['employees', 'settings', 'connection', 'risk', 'profit', 'ledger'].includes(page)) return false;
+  return true;
+}
 
 let applicationSettings = {
   organizationName: 'G-Squad',
@@ -20,8 +45,8 @@ let applicationSettings = {
 const pageDetails = {
   users: { title: 'User management', subtitle: 'Find members by account ID or email, manage access, and review member activity.', resource: 'users', columns: [['accountId', 'Account ID'], ['name', 'Name'], ['email', 'Email'], ['emailVerified', 'Email verified'], ['walletBalanceMinor', 'Wallet'], ['configuredStakeMinor', 'Configured stake'], ['botEnabled', 'Participation'], ['status', 'Account'], ['lastSeenAt', 'Last active']] },
   employees: { title: 'Employee access', subtitle: 'Provision employee administrator accounts and assign access roles.', resource: 'employees', columns: [['username', 'Username'], ['role', 'Role'], ['createdAt', 'Created'], ['lastLoginAt', 'Last sign-in']] },
-  deposits: { title: 'Deposits', subtitle: 'Review pending deposit records. Approval records a decision only; it does not credit a wallet.', resource: 'deposits', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
-  withdrawals: { title: 'Withdrawals', subtitle: 'Review pending withdrawal records. Approval records a decision only; it does not pay out funds.', resource: 'withdrawals', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
+  deposits: { title: 'Deposits', subtitle: 'Review pending deposit records. Approval records a decision only; it does not credit a wallet.', resource: 'deposits', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['reviewNote', 'Review note'], ['reviewedBy', 'Reviewed by'], ['createdAt', 'Requested']] },
+  withdrawals: { title: 'Withdrawals', subtitle: 'Review pending withdrawal records. Approval records a decision only; it does not pay out funds.', resource: 'withdrawals', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['reviewNote', 'Review note'], ['reviewedBy', 'Reviewed by'], ['createdAt', 'Requested']] },
   trades: { title: 'Trade history', subtitle: 'Only Deriv-confirmed execution results may be reported as real trades.', resource: 'trades', columns: [['mode', 'Mode'], ['contractId', 'Contract ID'], ['actualStakeMinor', 'Actual stake'], ['payoutMinor', 'Payout'], ['profitLossMinor', 'Profit / loss'], ['confirmedByDeriv', 'Deriv confirmed'], ['status', 'Execution'], ['executedAt', 'Timestamp']] },
   profit: { title: 'Profit sharing', subtitle: 'Frozen participants, contributions, proportional allocations, and settlement status.', resource: 'rounds', columns: [['mode', 'Mode'], ['id', 'Round'], ['participantCount', 'Participants'], ['combinedStakeMinor', 'Combined stake'], ['status', 'Settlement'], ['contractId', 'Contract ID'], ['createdAt', 'Created']] },
   ledger: { title: 'Wallet ledger', subtitle: 'An append-only record of every wallet credit, debit, and adjustment.', resource: 'ledger', columns: [['createdAt', 'Timestamp'], ['accountId', 'Account ID'], ['userName', 'User'], ['entryType', 'Entry'], ['direction', 'Direction'], ['amountMinor', 'Amount'], ['balanceAfterMinor', 'Balance after'], ['referenceId', 'Reference']] },
@@ -138,7 +163,6 @@ function Brand() {
 }
 
 function Sidebar({ activePage, onNavigate, open, onClose, user }) {
-  const elevatedOnly = new Set(['users', 'employees', 'settings', 'connection', 'risk', 'deposits', 'withdrawals', 'profit', 'ledger', 'security']);
   return (
     <>
       <button className={`sidebar-scrim${open ? ' is-visible' : ''}`} aria-label="Close navigation" onClick={onClose} />
@@ -146,7 +170,7 @@ function Sidebar({ activePage, onNavigate, open, onClose, user }) {
         <div className="sidebar-brand"><Brand /><button className="mobile-close" type="button" onClick={onClose} aria-label="Close navigation">×</button></div>
         <nav className="side-nav">
           {navigation.map((group) => {
-            const items = user.role === 'super_admin' ? group.items : group.items.filter((item) => !elevatedOnly.has(item.id));
+            const items = group.items.filter((item) => canAccessPage(user, item.id));
             return items.length > 0 && <div className="nav-group" key={group.label}>
               <p className="nav-group-label">{group.label}</p>
               {items.map((item) => (
@@ -503,10 +527,11 @@ function ApplicationSettingsEditor({ settings, onSettingsChanged }) {
   );
 }
 
-function EmployeesPage({ data, loading, error, onRetry }) {
+function EmployeesPage({ data, loading, error, onRetry, pageQuery, onQueryChange }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('admin');
+  const [permissions, setPermissions] = useState([]);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [formError, setFormError] = useState('');
@@ -519,11 +544,12 @@ function EmployeesPage({ data, loading, error, onRetry }) {
     try {
       await api('/api/admin/employees', {
         method: 'POST',
-        body: JSON.stringify({ username, password, role }),
+        body: JSON.stringify({ username, password, role, permissions: role === 'admin' ? permissions : [] }),
       });
       setUsername('');
       setPassword('');
       setRole('admin');
+      setPermissions([]);
       setFeedback('Employee account created.');
       onRetry();
     } catch (requestError) {
@@ -537,8 +563,8 @@ function EmployeesPage({ data, loading, error, onRetry }) {
   if (error) return <ErrorPanel message={error} onRetry={onRetry} />;
   return (
     <div className="page-stack">
-      <PageHeading title="Employee access" subtitle="Create staff accounts with the minimum access needed for their work." />
-      <div className="notice notice-info"><span className="notice-icon">i</span><span>Only super-admins can provision employees. Admin employees have read-only operational access; super-admins can manage configuration, access, and sensitive records.</span></div>
+      <PageHeading title="Employee access" subtitle="Create staff accounts with only the permissions required for their work." />
+      <div className="notice notice-info"><span className="notice-icon">i</span><span>Scoped admins can only access the areas explicitly granted. Super-admin accounts retain full administrative access.</span></div>
       <form className="surface-card config-form" onSubmit={submit}>
         <div className="section-heading"><div><h2>Add employee</h2><p>Set a unique username, initial password, and role.</p></div></div>
         <div className="form-grid">
@@ -546,16 +572,84 @@ function EmployeesPage({ data, loading, error, onRetry }) {
           <label className="form-field"><span>Initial password (14+ characters)</span><input type="password" minLength="14" maxLength="1024" autoComplete="new-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
           <label className="form-field"><span>Role</span><select value={role} onChange={(event) => setRole(event.target.value)}><option value="admin">Admin — operational read-only</option><option value="super_admin">Super-admin — full administration</option></select></label>
         </div>
+        {role === 'admin' && <PermissionChecklist selected={permissions} onChange={setPermissions} />}
         {formError && <p className="inline-error" role="alert">{formError}</p>}
         {feedback && <p className="form-feedback" role="status">{feedback}</p>}
         <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create employee'}</button></div>
       </form>
-      <RecordPage config={pageDetails.employees} data={data} loading={false} error={null} onRetry={onRetry} />
+      <section className="surface-card table-card">
+        <div className="section-heading table-heading"><div><h2>Employee accounts</h2><p>Change scoped admin permissions at any time.</p></div><div className="record-filters">
+          <label className="search-box"><span aria-hidden="true">⌕</span><input type="search" value={pageQuery.q || ''} onChange={(event) => onQueryChange({ page: 1, q: event.target.value })} placeholder="Search employees" aria-label="Search employees" /></label>
+        </div></div>
+        {!data?.records?.length ? <div className="empty-state"><strong>No employees yet</strong><span>Provision staff accounts above.</span></div> : <div className="table-scroll"><table className="data-table"><thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Last sign-in</th><th>Permissions</th><th>Manage</th></tr></thead><tbody>
+          {data.records.map((employee) => <EmployeePermissionRow key={employee.id} employee={employee} onSaved={onRetry} />)}
+        </tbody></table></div>}
+        <PaginationControls pagination={data?.pagination} onPageChange={(page) => onQueryChange({ page })} />
+      </section>
     </div>
   );
 }
 
-function MembersPage({ data, loading, error, onRetry }) {
+function PermissionChecklist({ selected, onChange }) {
+  return <fieldset className="permission-checklist">
+    <legend>Admin permissions</legend>
+    {permissionChoices.map(([permission, label]) => <label className="form-checkbox" key={permission}>
+      <input type="checkbox" checked={selected.includes(permission)} onChange={(event) => onChange(
+        event.target.checked
+          ? [...selected, permission]
+          : selected.filter((item) => item !== permission),
+      )} />
+      <span>{label}</span>
+    </label>)}
+  </fieldset>;
+}
+
+function EmployeePermissionRow({ employee, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [permissions, setPermissions] = useState(employee.permissions || []);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function save() {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api(`/api/admin/employees/${encodeURIComponent(employee.id)}/permissions`, {
+        method: 'PATCH',
+        body: JSON.stringify({ permissions }),
+      });
+      setPermissions(result.permissions);
+      setEditing(false);
+      onSaved();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <tr>
+    <td data-label="Username">{employee.username}</td>
+    <td data-label="Role">{employee.role.replace('_', ' ')}</td>
+    <td data-label="Created">{dateLabel(employee.createdAt)}</td>
+    <td data-label="Last sign-in">{dateLabel(employee.lastLoginAt)}</td>
+    <td data-label="Permissions">{employee.role === 'super_admin' ? 'Full access' : (employee.permissions || []).map((permission) => permission.replace('.', ' ')).join(', ') || 'Read-only operations'}</td>
+    <td data-label="Manage">{employee.role === 'super_admin' ? '—' : <button className="table-action" type="button" onClick={() => setEditing((current) => !current)}>{editing ? 'Close' : 'Edit permissions'}</button>}</td>
+    {editing && <td colSpan="6"><PermissionChecklist selected={permissions} onChange={setPermissions} />{error && <p className="inline-error" role="alert">{error}</p>}<button className="button button-primary" type="button" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save permissions'}</button></td>}
+  </tr>;
+}
+
+function MembersPage({
+  data,
+  loading,
+  error,
+  onRetry,
+  canManage = true,
+  canExport = true,
+  pagination,
+  pageQuery,
+  onQueryChange,
+}) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [lookup, setLookup] = useState('');
@@ -565,6 +659,10 @@ function MembersPage({ data, loading, error, onRetry }) {
   const [feedback, setFeedback] = useState('');
   const [formError, setFormError] = useState('');
   const [password, setPassword] = useState('');
+  const [memberFilter, setMemberFilter] = useState(pageQuery.q || '');
+  const [memberStatus, setMemberStatus] = useState(pageQuery.status || '');
+  useEffect(() => setMemberFilter(pageQuery.q || ''), [pageQuery.q]);
+  useEffect(() => setMemberStatus(pageQuery.status || ''), [pageQuery.status]);
 
   async function createMember(event) {
     event.preventDefault();
@@ -662,6 +760,43 @@ function MembersPage({ data, loading, error, onRetry }) {
     }
   }
 
+  async function runRecovery(action) {
+    setBusy(true);
+    setFeedback('');
+    setFormError('');
+    try {
+      const result = await api(`/api/admin/users/${encodeURIComponent(selected.id)}/recovery`, {
+        method: 'POST',
+        body: JSON.stringify({ action }),
+      });
+      setFeedback(result.message);
+      await openMember(selected.id);
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exportMember() {
+    setBusy(true);
+    setFormError('');
+    try {
+      const result = await api(`/api/admin/users/${encodeURIComponent(selected.id)}/export`);
+      const downloadUrl = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `member-${selected.accountId}.json`;
+      link.click();
+      URL.revokeObjectURL(downloadUrl);
+      setFeedback('Member export downloaded and recorded in the audit log.');
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function deactivateMember() {
     if (!window.confirm(`Deactivate ${selected.name}'s account? Their records will be retained.`)) return;
     setBusy(true);
@@ -686,7 +821,7 @@ function MembersPage({ data, loading, error, onRetry }) {
   return (
     <div className="page-stack">
       <PageHeading title="User management" subtitle="Create members, find accounts by exact account ID or email, manage credentials, and review member activity." />
-      <form className="surface-card config-form" onSubmit={createMember}>
+      {canManage && <form className="surface-card config-form" onSubmit={createMember}>
         <div className="section-heading"><div><h2>Create member</h2><p>A verification link is sent to the member's email. After verifying, the member can use “Forgot password?” to set their first password.</p></div></div>
         <div className="form-grid">
           <label className="form-field"><span>Member name</span><input minLength="2" maxLength="80" required value={name} onChange={(event) => setName(event.target.value)} /></label>
@@ -695,7 +830,7 @@ function MembersPage({ data, loading, error, onRetry }) {
         {formError && <p className="inline-error" role="alert">{formError}</p>}
         {feedback && <p className="form-feedback" role="status">{feedback}</p>}
         <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Working…' : 'Create member'}</button></div>
-      </form>
+      </form>}
 
       <section className="surface-card detail-card">
         <div className="section-heading"><div><h2>Find a member</h2><p>Search by exact account ID or email address.</p></div></div>
@@ -708,14 +843,14 @@ function MembersPage({ data, loading, error, onRetry }) {
       </section>
 
       {selected && memberDetails && <section className="surface-card detail-card member-detail">
-        <div className="section-heading"><div><h2>{selected.name}</h2><p>{selected.accountId} · {selected.email}</p></div><button className="button button-subtle" type="button" onClick={() => { setSelected(null); setMemberDetails(null); }}>Close</button></div>
+        <div className="section-heading"><div><h2>{selected.name}</h2><p>{selected.accountId} · {selected.email}</p></div><div className="member-header-actions">{canExport && <button className="button button-subtle" type="button" disabled={busy} onClick={exportMember}>Export member data</button>}<button className="button button-subtle" type="button" onClick={() => { setSelected(null); setMemberDetails(null); }}>Close</button></div></div>
         <div className="member-summary">
           <StatusLine label="Account status" value={selected.status} />
           <StatusLine label="Email verified" value={selected.emailVerified ? 'Yes' : 'No'} />
           <StatusLine label="Wallet balance" value={money(selected.walletBalanceMinor, selected.currency)} />
           <StatusLine label="Last active" value={dateLabel(selected.lastSeenAt)} />
         </div>
-        <form className="config-form config-form-compact" onSubmit={saveMember}>
+        {canManage && <form className="config-form config-form-compact" onSubmit={saveMember}>
           <p className="member-edit-note">Changing the email address requires the member to verify the new address before signing in. Suspending an account revokes active sessions.</p>
           <div className="form-grid">
             <label className="form-field"><span>Name</span><input minLength="2" maxLength="80" required value={selected.name} onChange={(event) => setSelected({ ...selected, name: event.target.value })} /></label>
@@ -724,24 +859,36 @@ function MembersPage({ data, loading, error, onRetry }) {
           </div>
           {formError && <p className="inline-error" role="alert">{formError}</p>}
           <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save member information'}</button></div>
-        </form>
-        <form className="config-form config-form-compact member-password-form" onSubmit={setMemberPassword}>
+        </form>}
+        {canManage && <form className="config-form config-form-compact member-password-form" onSubmit={setMemberPassword}>
           <div className="section-heading"><div><h2>Set a new password</h2><p>Minimum 14 characters. Saving revokes all existing member sessions.</p></div></div>
           <div className="member-lookup-form">
             <label className="form-field"><span>New password</span><input type="password" minLength="14" maxLength="1024" autoComplete="new-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
             <button className="button button-subtle" type="submit" disabled={busy}>Set password</button>
           </div>
-        </form>
+        </form>}
+        {canManage && <section className="member-recovery-actions">
+          <div className="section-heading"><div><h2>Account recovery</h2><p>Recovery links expire after one hour.</p></div></div>
+          {selected.status === 'suspended' && <button className="button button-subtle" type="button" disabled={busy} onClick={() => runRecovery('reactivate')}>Reactivate account</button>}
+          {!selected.emailVerified && selected.status === 'active' && <button className="button button-subtle" type="button" disabled={busy} onClick={() => runRecovery('resend_verification')}>Resend verification</button>}
+          {selected.emailVerified && selected.status === 'active' && <button className="button button-subtle" type="button" disabled={busy} onClick={() => runRecovery('send_password_reset')}>Send password reset email</button>}
+        </section>}
         <div className="section-heading member-activity-heading"><div><h2>Member activity and transactions</h2><p>Recent records per category, with the latest 100 shown.</p></div></div>
         <MemberActivity activity={memberDetails.activity} currency={selected.currency} />
-        {selected.status !== 'suspended' && <div className="form-actions member-deactivate"><button className="button button-danger" type="button" disabled={busy} onClick={deactivateMember}>Deactivate account</button></div>}
+        {canManage && selected.status !== 'suspended' && <div className="form-actions member-deactivate"><button className="button button-danger" type="button" disabled={busy} onClick={deactivateMember}>Deactivate account</button></div>}
       </section>}
 
-      {!records.length ? <div className="surface-card empty-state"><strong>No members yet</strong><span>Members created here or through signup will appear in this list.</span></div> : <section className="surface-card table-card">
-        <div className="section-heading table-heading"><div><h2>Members</h2><p>Open a member record to manage access and review activity.</p></div></div>
+      {!records.length ? <div className="surface-card empty-state"><strong>{pageQuery.q || pageQuery.status ? 'No matching members' : 'No members yet'}</strong><span>Members created here or through signup will appear in this list.</span></div> : <section className="surface-card table-card">
+        <div className="section-heading table-heading"><div><h2>Members</h2><p>Open a member record to manage access and review activity.</p></div><div className="record-filters">
+          <label className="search-box"><span aria-hidden="true">⌕</span><input type="search" value={memberFilter} onChange={(event) => onQueryChange({ page: 1, q: event.target.value })} placeholder="Search members" aria-label="Search members" /></label>
+          <select aria-label="Filter members by status" value={memberStatus} onChange={(event) => onQueryChange({ page: 1, status: event.target.value })}>
+            <option value="">All statuses</option><option value="active">Active</option><option value="suspended">Suspended</option>
+          </select>
+        </div></div>
         <div className="table-scroll"><table className="data-table"><thead><tr><th scope="col">Account ID</th><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Status</th><th scope="col">Activity</th></tr></thead><tbody>
           {records.map((record) => <tr key={record.id}><td data-label="Account ID">{record.accountId}</td><td data-label="Name">{record.name}</td><td data-label="Email">{record.email}</td><td data-label="Status"><CellValue value={record.status} record={record} field="status" /></td><td data-label="Activity"><button className="table-action" type="button" disabled={busy} onClick={() => openMember(record.id)}>Manage & view activity</button></td></tr>)}
         </tbody></table></div>
+        <PaginationControls pagination={pagination} onPageChange={(page) => onQueryChange({ page })} />
       </section>}
     </div>
   );
@@ -749,12 +896,12 @@ function MembersPage({ data, loading, error, onRetry }) {
 
 function MemberActivity({ activity, currency }) {
   const categories = [
-    ['Deposits', activity.deposits, [['amountMinor', 'Amount'], ['status', 'Status'], ['paymentReference', 'Reference'], ['createdAt', 'Date']]],
-    ['Withdrawals', activity.withdrawals, [['amountMinor', 'Amount'], ['status', 'Status'], ['paymentReference', 'Reference'], ['createdAt', 'Date']]],
+    ['Deposits', activity.deposits, [['amountMinor', 'Amount'], ['status', 'Status'], ['paymentReference', 'Reference'], ['reviewNote', 'Review note'], ['createdAt', 'Date']]],
+    ['Withdrawals', activity.withdrawals, [['amountMinor', 'Amount'], ['status', 'Status'], ['paymentReference', 'Reference'], ['reviewNote', 'Review note'], ['createdAt', 'Date']]],
     ['Wallet ledger', activity.ledger, [['entryType', 'Entry'], ['direction', 'Direction'], ['amountMinor', 'Amount'], ['balanceAfterMinor', 'Balance after'], ['createdAt', 'Date']]],
     ['Trades', activity.trades, [['contractId', 'Contract'], ['status', 'Status'], ['actualStakeMinor', 'Stake'], ['profitLossMinor', 'Profit / loss'], ['executedAt', 'Date']]],
     ['Support requests', activity.support, [['subject', 'Subject'], ['status', 'Status'], ['createdAt', 'Date']]],
-    ['Account events', activity.audit, [['action', 'Event'], ['createdAt', 'Date']]],
+    ['Account events', activity.audit, [['action', 'Event'], ['admin', 'Admin'], ['details', 'Changes'], ['createdAt', 'Date']]],
   ];
   return <div className="member-activity-grid">
     {categories.map(([title, entries, fields]) => <section className="member-activity-category" key={title}>
@@ -766,7 +913,7 @@ function MemberActivity({ activity, currency }) {
   </div>;
 }
 
-function SecurityPage({ user, data, loading, error, onRetry }) {
+function SecurityPage({ user, data, loading, error, onRetry, pageQuery, pagination, onQueryChange }) {
   if (loading) return <LoadingPanel label="Loading security settings…" />;
   if (error) return <ErrorPanel message={error} onRetry={onRetry} />;
   return (
@@ -776,11 +923,11 @@ function SecurityPage({ user, data, loading, error, onRetry }) {
         <div className="section-heading"><div><h2>Current session</h2><p>Authenticated admin identity</p></div><span className="status-tag status-tag-good">AUTHENTICATED</span></div>
         <StatusLine label="Username" value={user.username} />
         <StatusLine label="Role" value={user.role.replace('_', ' ')} />
-        <StatusLine label="Permissions" value={user.role === 'super_admin' ? 'Full administrative access; live financial actions remain disabled' : 'Read-only operational access'} />
-        <StatusLine label="Session protection" value="HttpOnly · SameSite · server stored" />
+        <StatusLine label="Permissions" value={user.role === 'super_admin' ? 'Full administrative access; live financial actions remain disabled' : (user.permissions || []).join(', ') || 'Read-only operational access'} />
+        <StatusLine label="Session protection" value={`HttpOnly · SameSite · server stored · ${user.sessionDurationMinutes || 60} minute expiry`} />
         <StatusLine label="Live money movement" value="Disabled" />
       </div>
-      <RecordPage config={{ title: 'Admin audit log', subtitle: 'Recorded sign-in and administrative events.', resource: 'audit', columns: [['createdAt', 'Timestamp'], ['admin', 'Admin'], ['action', 'Action'], ['targetType', 'Target'], ['ipAddress', 'IP address']] }} data={data} loading={false} error={null} onRetry={onRetry} />
+      <RecordPage config={{ title: 'Admin audit log', subtitle: 'Recorded sign-in and administrative events.', resource: 'audit', columns: [['createdAt', 'Timestamp'], ['admin', 'Admin'], ['action', 'Action'], ['targetType', 'Target'], ['targetId', 'Record'], ['ipAddress', 'IP address']] }} data={data} loading={false} error={null} onRetry={onRetry} pageQuery={pageQuery} pagination={pagination} onQueryChange={onQueryChange} />
     </div>
   );
 }
@@ -796,26 +943,35 @@ function RecordPage({
   roundDetails,
   roundLoading,
   roundError,
+  pagination,
+  pageQuery = { page: 1, q: '', status: '' },
+  onQueryChange = () => {},
 }) {
   const [filter, setFilter] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewMessage, setReviewMessage] = useState('');
-  useEffect(() => setFilter(''), [config.resource]);
+  const [reviewNote, setReviewNote] = useState('');
+  useEffect(() => setFilter(pageQuery.q || ''), [pageQuery.q]);
   useEffect(() => {
     setSelectedIds([]);
     setReviewMessage('');
-  }, [config.resource]);
+  }, [config.resource, pageQuery.page, pageQuery.q, pageQuery.status]);
   if (loading) return <LoadingPanel label={`Loading ${config.title.toLowerCase()}…`} />;
   if (error) return <ErrorPanel message={error} onRetry={onRetry} />;
   const records = data?.records || [];
-  const visibleRecords = config.resource === 'users' && filter
-    ? records.filter((record) => `${record.name} ${record.email} ${record.accountId}`.toLowerCase().includes(filter.toLowerCase()))
-    : records;
+  const visibleRecords = records;
   const isReviewable = ['deposits', 'withdrawals'].includes(config.resource);
   const pendingRecords = visibleRecords.filter((record) => record.status === 'pending' && record.id);
 
   async function reviewSelected(status) {
+    const action = status === 'approved' ? 'approve' : 'reject';
+    const reason = reviewNote.trim();
+    if (status === 'rejected' && reason.length < 3) {
+      setReviewMessage('Enter a rejection reason of at least 3 characters.');
+      return;
+    }
+    if (!window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${selectedIds.length} selected transaction(s)? This records a review only and will not move funds.`)) return;
     setReviewBusy(true);
     setReviewMessage('');
     try {
@@ -823,10 +979,12 @@ function RecordPage({
         method: 'POST',
         body: JSON.stringify({
           status,
+          note: reason,
           items: selectedIds.map((id) => ({ type: config.resource, id })),
         }),
       });
       setSelectedIds([]);
+      setReviewNote('');
       setReviewMessage(`${result.reviewed} transaction${result.reviewed === 1 ? '' : 's'} ${status}. Wallet balances were not changed.`);
       onRetry();
     } catch (requestError) {
@@ -839,11 +997,21 @@ function RecordPage({
   return (
     <section className="surface-card table-card">
       <div className="section-heading table-heading"><div><h2>{config.title}</h2><p>{config.subtitle}</p></div>
-        {config.resource === 'users' && <label className="search-box"><span aria-hidden="true">⌕</span><input type="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search users" aria-label="Search users" /></label>}
+        <div className="record-filters">
+          <label className="search-box"><span aria-hidden="true">⌕</span><input type="search" value={filter} onChange={(event) => {
+            setFilter(event.target.value);
+            onQueryChange({ page: 1, q: event.target.value });
+          }} placeholder={`Search ${config.title.toLowerCase()}`} aria-label={`Search ${config.title.toLowerCase()}`} /></label>
+          {['users', 'deposits', 'withdrawals', 'trades', 'rounds', 'support'].includes(config.resource) && <select aria-label={`Filter ${config.title.toLowerCase()} by status`} value={pageQuery.status || ''} onChange={(event) => onQueryChange({ page: 1, status: event.target.value })}>
+            <option value="">All statuses</option>
+            {[...new Set([...records.map((record) => record.status).filter(Boolean), 'pending', 'approved', 'rejected', 'active', 'suspended'])].map((status) => <option value={status} key={status}>{status.replaceAll('_', ' ')}</option>)}
+          </select>}
+        </div>
       </div>
       {isReviewable && <div className="bulk-review-bar">
         <label className="bulk-select"><input type="checkbox" aria-label="Select all pending transactions" checked={pendingRecords.length > 0 && pendingRecords.every((record) => selectedIds.includes(record.id))} onChange={(event) => setSelectedIds(event.target.checked ? pendingRecords.map((record) => record.id) : [])} /> Select pending</label>
         <span>{selectedIds.length} selected · review only, no funds moved</span>
+        <label className="bulk-review-note"><span>Review note / rejection reason</span><input maxLength="500" value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="Required when rejecting" /></label>
         <div className="bulk-review-actions">
           <button className="button button-primary" type="button" disabled={!selectedIds.length || reviewBusy} onClick={() => reviewSelected('approved')}>Approve selected</button>
           <button className="button button-danger" type="button" disabled={!selectedIds.length || reviewBusy} onClick={() => reviewSelected('rejected')}>Reject selected</button>
@@ -879,20 +1047,34 @@ function RecordPage({
             </>}
       </section>}
       <div className="table-footer"><span>{visibleRecords.length} {visibleRecords.length === 1 ? 'record' : 'records'}</span><span>G-Squad · Demo foundation</span></div>
+      <PaginationControls pagination={pagination} onPageChange={(page) => onQueryChange({ page })} />
     </section>
   );
+}
+
+function PaginationControls({ pagination, onPageChange }) {
+  if (!pagination || pagination.pageCount <= 1) {
+    return <div className="pagination-summary">{pagination ? `${pagination.total} total records` : ''}</div>;
+  }
+  return <div className="pagination-controls">
+    <span>Page {pagination.page} of {pagination.pageCount} · {pagination.total} records</span>
+    <div>
+      <button className="button button-subtle" type="button" disabled={pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)}>Previous</button>
+      <button className="button button-subtle" type="button" disabled={pagination.page >= pagination.pageCount} onClick={() => onPageChange(pagination.page + 1)}>Next</button>
+    </div>
+  </div>;
 }
 
 function CellValue({ value, record, field }) {
   if (value === null || value === undefined || value === '') return <span className="muted">—</span>;
   if (field === 'amountMinor' || field.endsWith('BalanceMinor') || field.endsWith('StakeMinor') || field === 'payoutMinor' || field === 'profitLossMinor') return money(value, record.currency || 'USD');
-  if (field === 'createdAt' || field === 'approvedAt' || field === 'executedAt' || field === 'updatedAt' || field === 'lastSeenAt') return dateLabel(value);
+  if (field === 'createdAt' || field === 'approvedAt' || field === 'executedAt' || field === 'updatedAt' || field === 'lastSeenAt' || field === 'reviewedAt') return dateLabel(value);
   if (field === 'botEnabled') return <span className={`status-tag ${value ? 'status-tag-warning' : 'status-tag-neutral'}`}>{value ? 'Opted in' : 'Off'}</span>;
   if (field === 'emailVerified') return <span className={`status-tag ${value ? 'status-tag-good' : 'status-tag-warning'}`}>{value ? 'Verified' : 'Pending'}</span>;
   if (field === 'confirmedByDeriv') return <span className={`status-tag ${value ? 'status-tag-good' : 'status-tag-neutral'}`}>{value ? 'Yes' : 'No'}</span>;
   if (field === 'mode') return <span className="status-tag status-tag-neutral">{value}</span>;
   if (field === 'status' || field === 'severity' || field === 'direction') return <span className={`status-tag ${statusTone(String(value))}`}>{String(value).replaceAll('_', ' ')}</span>;
-  return String(value);
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
 function statusTone(value) {
@@ -910,16 +1092,38 @@ function ErrorPanel({ message, onRetry }) {
   return <div className="surface-card state-panel error-panel"><span>{message}</span><button className="button button-subtle" type="button" onClick={onRetry}>Try again</button></div>;
 }
 
-function PageContent({ page, overview, pageData, pageLoading, pageError, onRetry, user, roundProps, onSettingsChanged }) {
+function PageContent({
+  page,
+  overview,
+  pageData,
+  pageLoading,
+  pageError,
+  onRetry,
+  user,
+  roundProps,
+  onSettingsChanged,
+  pageQuery,
+  onQueryChange,
+}) {
   if (page === 'overview') return <Overview metrics={overview.data?.metrics} loading={overview.loading} error={overview.error} onRetry={onRetry} />;
   if (page === 'connection') return <ConnectionPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'risk') return <RiskPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'settings') return <ApplicationSettingsPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} onSettingsChanged={onSettingsChanged} />;
-  if (page === 'employees') return <EmployeesPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
-  if (page === 'users') return <MembersPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
-  if (page === 'security') return <SecurityPage user={user} data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
+  if (page === 'employees') return <EmployeesPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} pageQuery={pageQuery} onQueryChange={onQueryChange} />;
+  if (page === 'users') return <MembersPage
+    data={pageData}
+    loading={pageLoading}
+    error={pageError}
+    onRetry={onRetry}
+    canManage={hasAdminPermission(user, 'users.manage')}
+    canExport={hasAdminPermission(user, 'users.export')}
+    pageQuery={pageQuery}
+    pagination={pageData?.pagination}
+    onQueryChange={onQueryChange}
+  />;
+  if (page === 'security') return <SecurityPage user={user} data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} pageQuery={pageQuery} pagination={pageData?.pagination} onQueryChange={onQueryChange} />;
   if (page === 'engine') return <EnginePage metrics={overview.data?.metrics} data={pageData} loading={pageLoading || overview.loading} error={pageError || overview.error} onRetry={onRetry} />;
-  return <div className="page-stack"><PageHeading title={pageDetails[page].title} subtitle={pageDetails[page].subtitle} /><RecordPage config={pageDetails[page]} data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} {...(page === 'profit' ? roundProps : {})} /></div>;
+  return <div className="page-stack"><PageHeading title={pageDetails[page].title} subtitle={pageDetails[page].subtitle} /><RecordPage config={pageDetails[page]} data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} pagination={pageData?.pagination} pageQuery={pageQuery} onQueryChange={onQueryChange} {...(page === 'profit' ? roundProps : {})} /></div>;
 }
 
 function Dashboard({ user, onLogout }) {
@@ -930,6 +1134,7 @@ function Dashboard({ user, onLogout }) {
   const [pageDataResource, setPageDataResource] = useState(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState('');
+  const [pageQuery, setPageQuery] = useState({ page: 1, pageSize: 25, q: '', status: '' });
   const [selectedRound, setSelectedRound] = useState(null);
   const [roundDetails, setRoundDetails] = useState(null);
   const [roundLoading, setRoundLoading] = useState(false);
@@ -959,7 +1164,13 @@ function Dashboard({ user, onLogout }) {
     setPageLoading(pageDataResource !== pageResource);
     setPageError('');
     try {
-      const data = await api(`/api/admin/${pageResource}`);
+      const parameters = new URLSearchParams({
+        page: String(pageQuery.page),
+        pageSize: String(pageQuery.pageSize),
+        ...(pageQuery.q ? { q: pageQuery.q } : {}),
+        ...(pageQuery.status ? { status: pageQuery.status } : {}),
+      });
+      const data = await api(`/api/admin/${pageResource}?${parameters}`);
       if (requestId === pageRequestId.current) {
         setPageData(data);
         setPageDataResource(pageResource);
@@ -995,7 +1206,7 @@ function Dashboard({ user, onLogout }) {
     roundRequestId.current += 1;
     setRoundLoading(false);
     loadPage();
-  }, [activePage]);
+  }, [activePage, pageQuery]);
 
   function retryPage() {
     if (activePage === 'overview') loadOverview();
@@ -1007,7 +1218,7 @@ function Dashboard({ user, onLogout }) {
 
   return (
     <div className="app-shell">
-      <Sidebar activePage={activePage} onNavigate={(page) => { setActivePage(page); setSidebarOpen(false); setSelectedRound(null); setRoundDetails(null); setRoundLoading(false); }} open={sidebarOpen} onClose={() => setSidebarOpen(false)} user={user} />
+      <Sidebar activePage={activePage} onNavigate={(page) => { setActivePage(page); setPageQuery({ page: 1, pageSize: 25, q: '', status: '' }); setSidebarOpen(false); setSelectedRound(null); setRoundDetails(null); setRoundLoading(false); }} open={sidebarOpen} onClose={() => setSidebarOpen(false)} user={user} />
       <div className="main-column">
         <Header user={user} activePage={activePage} onMenu={() => setSidebarOpen(true)} onLogout={onLogout} />
         <main className="main-content">
@@ -1019,6 +1230,8 @@ function Dashboard({ user, onLogout }) {
             pageError={pageError}
             onRetry={retryPage}
             user={user}
+            pageQuery={pageQuery}
+            onQueryChange={(nextQuery) => setPageQuery((current) => ({ ...current, ...nextQuery }))}
             onSettingsChanged={() => setBrandingVersion((version) => version + 1)}
             roundProps={{
               onSelectRound: loadRoundParticipants,

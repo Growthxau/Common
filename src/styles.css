@@ -241,6 +241,9 @@ h2 { margin-bottom: 5px; color: #29364a; font: 700 13px Manrope, "DM Sans", sans
 .member-summary .status-line { padding: 0; border: 0; }
 .member-edit-note { margin: 0; color: #7c8798; font-size: 9px; line-height: 1.5; }
 .member-password-form { padding-top: 15px; border-top: 1px solid #eef1f5; }
+.member-header-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.member-recovery-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 13px; border-top: 1px solid #eef1f5; }
+.member-recovery-actions .section-heading { flex: 1 1 100%; }
 .member-activity-heading { padding-top: 15px; border-top: 1px solid #eef1f5; }
 .member-activity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .member-activity-category { min-width: 0; overflow: hidden; padding: 12px; border: 1px solid #eef1f5; border-radius: 7px; }
@@ -254,8 +257,20 @@ h2 { margin-bottom: 5px; color: #29364a; font: 700 13px Manrope, "DM Sans", sans
 .bulk-select { display: inline-flex; align-items: center; gap: 6px; color: #526075; font-weight: 650; }
 .bulk-review-actions { display: flex; gap: 7px; margin-left: auto; }
 .bulk-review-actions .button { min-height: 29px; }
+.bulk-review-note { display: grid; min-width: 200px; gap: 4px; color: #778397; font-size: 8px; }
+.bulk-review-note input, .record-filters select { min-height: 32px; padding: 0 8px; border: 1px solid #e1e7ef; border-radius: 5px; background: white; color: #526075; font-size: 9px; }
 .bulk-review-message { margin: 0; padding: 9px 14px; color: #278861; font-size: 9px; }
 .bulk-review-message[role="status"] { color: #526075; }
+.record-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.record-filters .search-box { width: min(240px, 100%); }
+.pagination-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-top: 1px solid #eef1f5; color: #7c8798; font-size: 9px; }
+.pagination-controls > div { display: flex; gap: 7px; }
+.pagination-controls .button { min-height: 29px; }
+.pagination-summary { padding: 8px 14px; color: #9aa4b2; font-size: 8px; }
+.permission-checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 14px 0; padding: 12px; border: 1px solid #e8edf4; border-radius: 7px; }
+.permission-checklist legend { padding: 0 5px; color: #576479; font-size: 10px; font-weight: 650; }
+.permission-checklist .form-checkbox { min-height: 26px; align-self: auto; }
+.permission-checklist .form-checkbox span { font-size: 9px; }
 .form-feedback { margin: 0; color: #278861; font-size: 10px; }
 .config-form .inline-error { margin: 0; }
 .login-form input:focus { border-color: #8ca6f2; outline: 0; box-shadow: 0 0 0 3px rgba(56, 103, 232, .1); }
@@ -314,12 +329,18 @@ h2 { margin-bottom: 5px; color: #29364a; font: 700 13px Manrope, "DM Sans", sans
   .table-heading { align-items: flex-start; flex-direction: column; }
   .engine-actions { justify-content: flex-start; }
   .search-box { width: 100%; }
+  .record-filters { width: 100%; }
+  .record-filters .search-box { width: 100%; }
+  .record-filters select { width: 100%; }
   .member-lookup-form { grid-template-columns: minmax(0, 1fr); }
   .member-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .member-activity-grid { grid-template-columns: minmax(0, 1fr); }
   .bulk-review-bar { align-items: flex-start; flex-direction: column; }
+  .bulk-review-note { width: 100%; }
   .bulk-review-actions { width: 100%; margin-left: 0; }
   .bulk-review-actions .button { flex: 1; }
+  .permission-checklist { grid-template-columns: minmax(0, 1fr); }
+  .pagination-controls { align-items: flex-start; flex-direction: column; }
   .data-table thead { display: none; }
   .data-table, .data-table tbody, .data-table tr, .data-table td { display: block; width: 100%; }
   .data-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; padding: 12px 13px; border-top: 1px solid #eef1f5; }

@@ -7,7 +7,15 @@ const { createAccountId } = require('./user');
 const { sendAccountLink, smtpConfiguration } = require('./mailer');
 
 const router = express.Router();
-const elevatedResources = new Set(['users', 'members', 'transactions', 'employees', 'connection', 'settings', 'deriv-credentials', 'risk-settings', 'deposits', 'withdrawals', 'rounds', 'ledger', 'audit']);
+const elevatedResources = new Set(['members', 'transactions', 'employees', 'connection', 'settings', 'deriv-credentials', 'risk-settings', 'rounds', 'ledger']);
+const validPermissions = new Set([
+  'users.read',
+  'users.manage',
+  'users.export',
+  'transactions.read',
+  'transactions.review',
+  'audit.read',
+]);
 
 const defaultSettings = {
   organizationName: 'G-Squad',
@@ -22,11 +30,57 @@ const MAX_LOGO_BYTES = 1024 * 1024;
 
 router.use((request, response, next) => {
   const resource = request.path.split('/').filter(Boolean)[0];
-  if (request.admin.role !== 'super_admin' && elevatedResources.has(resource)) {
+  if (request.admin.role === 'super_admin') return next();
+
+  let permission;
+  if (resource === 'users') {
+    permission = request.path.endsWith('/export')
+      ? 'users.export'
+      : ['PATCH', 'DELETE'].includes(request.method)
+        || (request.method === 'POST' && request.path.endsWith('/password'))
+        || (request.method === 'POST' && request.path.endsWith('/recovery'))
+        ? 'users.manage'
+        : request.method === 'GET'
+          ? 'users.read'
+          : 'users.manage';
+  } else if (resource === 'members') {
+    permission = 'users.manage';
+  } else if (resource === 'deposits' || resource === 'withdrawals') {
+    permission = request.method === 'GET' ? 'transactions.read' : 'transactions.review';
+  } else if (resource === 'transactions') {
+    permission = request.method === 'POST' ? 'transactions.review' : 'transactions.read';
+  } else if (resource === 'audit') {
+    permission = 'audit.read';
+  }
+
+  const permissions = request.admin.permissions || [];
+  const hasPermission = permission === 'users.read'
+    ? permissions.includes('users.read') || permissions.includes('users.manage') || permissions.includes('users.export')
+    : permission === 'transactions.read'
+      ? permissions.includes('transactions.read') || permissions.includes('transactions.review')
+      : permissions.includes(permission);
+  if (permission && hasPermission) return next();
+  if (!permission && !elevatedResources.has(resource)) return next();
+  if (request.admin.role !== 'super_admin') {
     return response.status(403).json({ error: 'This resource requires super-admin permission.' });
   }
   return next();
 });
+
+async function notifyMember(userId, category, title, message) {
+  await db.prepare(`
+    INSERT INTO user_notifications (id, user_id, category, title, message)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(randomUUID(), userId, category, title, message);
+}
+
+function parseJson(value, fallback = {}) {
+  try {
+    return JSON.parse(value || JSON.stringify(fallback));
+  } catch {
+    return fallback;
+  }
+}
 
 async function count(sql) {
   return Number((await db.prepare(sql).get()).count);
@@ -301,26 +355,30 @@ router.post('/employees', async (request, response) => {
     : '';
   const password = typeof request.body?.password === 'string' ? request.body.password : '';
   const role = request.body?.role;
+  const permissions = request.body?.permissions;
   if (!/^[a-z0-9._-]{3,64}$/.test(username)
       || password.length < 14 || password.length > 1024
-      || !['admin', 'super_admin'].includes(role)) {
+      || !['admin', 'super_admin'].includes(role)
+      || (permissions !== undefined && (!Array.isArray(permissions)
+        || permissions.some((permission) => !validPermissions.has(permission))))) {
     return response.status(400).json({ error: 'Enter a valid username, a password of at least 14 characters, and an available role.' });
   }
 
   const id = randomUUID();
   const passwordHash = await hashPassword(password);
+  const assignedPermissions = role === 'admin' ? [...new Set(permissions || [])] : [];
   try {
     await db.transaction(async () => {
-    await db.prepare(`
-        INSERT INTO admin_users (id, username, password_hash, role)
-        VALUES (?, ?, ?, ?)
-      `).run(id, username, passwordHash, role);
+      await db.prepare(`
+        INSERT INTO admin_users (id, username, password_hash, role, permissions_json)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(id, username, passwordHash, role, JSON.stringify(assignedPermissions));
       await audit({
         adminId: request.admin.id,
         action: 'employee.created',
         targetType: 'admin_user',
         targetId: id,
-        details: { username, role },
+        details: { username, role, permissions: assignedPermissions },
         request,
       });
     })();
@@ -330,7 +388,34 @@ router.post('/employees', async (request, response) => {
     }
     throw error;
   }
-  return response.status(201).json({ employee: { id, username, role } });
+  return response.status(201).json({ employee: { id, username, role, permissions: assignedPermissions } });
+});
+
+router.patch('/employees/:employeeId/permissions', async (request, response) => {
+  const permissions = request.body?.permissions;
+  if (!Array.isArray(permissions) || permissions.some((permission) => !validPermissions.has(permission))) {
+    return response.status(400).json({ error: 'Select valid staff permissions.' });
+  }
+  const employee = await db.prepare('SELECT id, role, username FROM admin_users WHERE id = ?')
+    .get(request.params.employeeId);
+  if (!employee) return response.status(404).json({ error: 'Employee not found.' });
+  if (employee.role === 'super_admin') {
+    return response.status(400).json({ error: 'Super-admin permissions cannot be customized.' });
+  }
+  const assignedPermissions = [...new Set(permissions)];
+  await db.transaction(async () => {
+    await db.prepare('UPDATE admin_users SET permissions_json = ? WHERE id = ?')
+      .run(JSON.stringify(assignedPermissions), employee.id);
+    await audit({
+      adminId: request.admin.id,
+      action: 'employee.permissions_updated',
+      targetType: 'admin_user',
+      targetId: employee.id,
+      details: { username: employee.username, permissions: assignedPermissions },
+      request,
+    });
+  })();
+  return response.json({ permissions: assignedPermissions });
 });
 
 router.post('/members', async (request, response) => {
@@ -435,6 +520,16 @@ router.patch('/users/:userId', async (request, response) => {
       if (status !== 'active' || email !== user.email) {
         await db.prepare('DELETE FROM user_action_tokens WHERE user_id = ?').run(user.id);
       }
+      await notifyMember(
+        user.id,
+        status !== 'active' ? 'security' : 'account',
+        status !== 'active' ? 'Account suspended' : 'Account information changed',
+        status !== 'active'
+          ? 'An administrator suspended your account. Contact support if you believe this was a mistake.'
+          : email !== user.email
+            ? 'Your account email was changed. Verify the new email address before signing in.'
+            : 'An administrator updated your account information.',
+      );
       await audit({
         adminId: request.admin.id,
         action: 'member.updated',
@@ -453,6 +548,84 @@ router.patch('/users/:userId', async (request, response) => {
   return response.json({ updated: true });
 });
 
+router.post('/users/:userId/recovery', async (request, response) => {
+  const action = request.body?.action;
+  if (!['resend_verification', 'send_password_reset', 'reactivate'].includes(action)) {
+    return response.status(400).json({ error: 'Choose a valid account recovery action.' });
+  }
+  const user = await db.prepare(`
+    SELECT id, display_name AS name, email, status, email_verified AS emailVerified
+    FROM users WHERE id = ? AND is_demo = 0
+  `).get(request.params.userId);
+  if (!user) return response.status(404).json({ error: 'Member not found.' });
+  if (action === 'resend_verification' && user.emailVerified) {
+    return response.status(400).json({ error: 'This member email is already verified.' });
+  }
+  if (action === 'send_password_reset' && (!user.emailVerified || user.status !== 'active')) {
+    return response.status(400).json({ error: 'Password reset email requires an active account with a verified email.' });
+  }
+  if ((action !== 'reactivate' || !user.emailVerified) && !smtpConfiguration()) {
+    return response.status(503).json({ error: 'Email delivery is not configured.' });
+  }
+
+  const verification = action === 'resend_verification'
+    || (action === 'reactivate' && !user.emailVerified);
+  const tokenAction = verification ? 'verify_email' : 'password_reset';
+  const token = randomBytes(32).toString('base64url');
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  await db.transaction(async () => {
+    if (action === 'reactivate') {
+      await db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(user.id);
+    }
+    if (verification || action === 'send_password_reset') {
+      await db.prepare('DELETE FROM user_action_tokens WHERE user_id = ? AND action = ?')
+        .run(user.id, tokenAction);
+      await db.prepare(`
+        INSERT INTO user_action_tokens (token_hash, user_id, action, expires_at)
+        VALUES (?, ?, ?, ?)
+      `).run(hashToken(token), user.id, tokenAction, expiresAt);
+    }
+    await notifyMember(
+      user.id,
+      'security',
+      action === 'reactivate' ? 'Account reactivated' : 'Account recovery requested',
+      action === 'reactivate'
+        ? 'An administrator reactivated your account.'
+        : 'An administrator requested an account recovery email for you.',
+    );
+    await audit({
+      adminId: request.admin.id,
+      action: `member.${action}`,
+      targetType: 'user',
+      targetId: user.id,
+      details: { email: user.email },
+      request,
+    });
+  })();
+
+  if (action === 'reactivate' && user.emailVerified) {
+    return response.json({ updated: true, message: 'Member account reactivated.' });
+  }
+  try {
+    await sendAccountLink({
+      request,
+      email: user.email,
+      name: user.name,
+      token,
+      type: tokenAction,
+    });
+  } catch (error) {
+    console.error('Could not send admin-requested member recovery email:', error.message);
+    return response.status(503).json({
+      error: 'The recovery action was recorded, but the email could not be sent. Try again after checking SMTP configuration.',
+    });
+  }
+  return response.json({
+    updated: action === 'reactivate',
+    message: verification ? 'Verification email sent.' : 'Password reset email sent.',
+  });
+});
+
 router.post('/users/:userId/password', async (request, response) => {
   const password = typeof request.body?.password === 'string' ? request.body.password : '';
   if (password.length < 14 || password.length > 1024) {
@@ -465,6 +638,7 @@ router.post('/users/:userId/password', async (request, response) => {
     await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, user.id);
     await db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(user.id);
     await db.prepare('DELETE FROM user_action_tokens WHERE user_id = ?').run(user.id);
+    await notifyMember(user.id, 'security', 'Password changed', 'An administrator set a new password for your account. All previous sessions were signed out.');
     await audit({
       adminId: request.admin.id,
       action: 'member.password_reset_by_admin',
@@ -494,7 +668,7 @@ router.delete('/users/:userId', async (request, response) => {
   return response.json({ deactivated: true });
 });
 
-router.get('/users/:userId', async (request, response) => {
+async function readMemberDetails(userId) {
   const user = await db.prepare(`
     SELECT users.id, users.account_id AS accountId, users.display_name AS name,
       users.email, users.email_verified AS emailVerified, users.status,
@@ -503,12 +677,14 @@ router.get('/users/:userId', async (request, response) => {
       wallets.balance_minor AS walletBalanceMinor
     FROM users LEFT JOIN wallets ON wallets.user_id = users.id
     WHERE users.id = ? AND users.is_demo = 0
-  `).get(request.params.userId);
-  if (!user) return response.status(404).json({ error: 'Member not found.' });
+  `).get(userId);
+  if (!user) return null;
   const [deposits, withdrawals, ledger, trades, support, activity] = await Promise.all([
-    db.prepare(`SELECT id, amount_minor AS amountMinor, currency, status, payment_reference AS paymentReference, created_at AS createdAt
+    db.prepare(`SELECT id, amount_minor AS amountMinor, currency, status, payment_reference AS paymentReference,
+      review_note AS reviewNote, reviewed_at AS reviewedAt, created_at AS createdAt
       FROM deposits WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
-    db.prepare(`SELECT id, amount_minor AS amountMinor, currency, status, payment_reference AS paymentReference, created_at AS createdAt
+    db.prepare(`SELECT id, amount_minor AS amountMinor, currency, status, payment_reference AS paymentReference,
+      review_note AS reviewNote, reviewed_at AS reviewedAt, created_at AS createdAt
       FROM withdrawals WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
     db.prepare(`SELECT id, entry_type AS entryType, direction, amount_minor AS amountMinor, currency,
       balance_after_minor AS balanceAfterMinor, reference_type AS referenceType, reference_id AS referenceId,
@@ -520,52 +696,103 @@ router.get('/users/:userId', async (request, response) => {
       ORDER BY trades.created_at DESC LIMIT 100`).all(user.id),
     db.prepare(`SELECT id, subject, message, status, response, created_at AS createdAt, updated_at AS updatedAt
       FROM support_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
-    db.prepare(`SELECT action, details_json AS details, created_at AS createdAt FROM audit_logs
-      WHERE target_type = 'user' AND target_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
+    db.prepare(`SELECT audit_logs.action, audit_logs.details_json AS details,
+      admin_users.username AS admin, audit_logs.created_at AS createdAt
+      FROM audit_logs LEFT JOIN admin_users ON admin_users.id = audit_logs.admin_id
+      WHERE audit_logs.target_type = 'user' AND audit_logs.target_id = ?
+      ORDER BY audit_logs.created_at DESC LIMIT 100`).all(user.id),
   ]);
-  return response.json({ user, activity: { deposits, withdrawals, ledger, trades, support, audit: activity } });
+  return {
+    user,
+    activity: {
+      deposits,
+      withdrawals,
+      ledger,
+      trades,
+      support,
+      audit: activity.map((entry) => ({ ...entry, details: parseJson(entry.details) })),
+    },
+  };
+}
+
+router.get('/users/:userId/export', async (request, response) => {
+  const details = await readMemberDetails(request.params.userId);
+  if (!details) return response.status(404).json({ error: 'Member not found.' });
+  await audit({
+    adminId: request.admin.id,
+    action: 'member.data_exported',
+    targetType: 'user',
+    targetId: details.user.id,
+    request,
+  });
+  response.set('Content-Disposition', `attachment; filename="member-${details.user.accountId}.json"`);
+  response.set('Cache-Control', 'no-store');
+  return response.json(details);
+});
+
+router.get('/users/:userId', async (request, response) => {
+  const details = await readMemberDetails(request.params.userId);
+  if (!details) return response.status(404).json({ error: 'Member not found.' });
+  return response.json(details);
 });
 
 router.post('/transactions/bulk-review', async (request, response) => {
   const items = request.body?.items;
   const status = request.body?.status;
+  const note = typeof request.body?.note === 'string' ? request.body.note.trim() : '';
   if (!Array.isArray(items) || items.length < 1 || items.length > 100
       || !['approved', 'rejected'].includes(status)
+      || note.length > 500 || (status === 'rejected' && note.length < 3)
       || items.some((item) => !item || !['deposits', 'withdrawals'].includes(item.type)
         || typeof item.id !== 'string' || item.id.length > 100)
       || new Set(items.map((item) => `${item.type}:${item.id}`)).size !== items.length) {
-    return response.status(400).json({ error: 'Select between 1 and 100 unique pending transactions to review.' });
+    return response.status(400).json({
+      error: 'Select between 1 and 100 unique pending transactions; rejected records require a reason of at least 3 characters.',
+    });
   }
 
   await db.transaction(async () => {
+    const affectedUsers = new Set();
     for (const item of items) {
-      const record = await db.prepare(`SELECT id FROM ${item.type} WHERE id = ? AND status = 'pending'`).get(item.id);
+      const record = await db.prepare(`SELECT id, user_id AS userId FROM ${item.type} WHERE id = ? AND status = 'pending'`).get(item.id);
       if (!record) {
         const error = new Error('Every selected transaction must still be pending.');
         error.status = 409;
         throw error;
       }
+      affectedUsers.add(record.userId);
     }
     for (const item of items) {
       const result = await db.prepare(`
-        UPDATE ${item.type} SET status = ?, reviewed_by_admin_id = ?, reviewed_at = CURRENT_TIMESTAMP
+        UPDATE ${item.type} SET status = ?, reviewed_by_admin_id = ?, reviewed_at = CURRENT_TIMESTAMP,
+          review_note = ?
         WHERE id = ? AND status = 'pending'
-      `).run(status, request.admin.id, item.id);
+      `).run(status, request.admin.id, note || null, item.id);
       if (result.changes !== 1) {
         const error = new Error('A selected transaction changed during review. Refresh and try again.');
         error.status = 409;
         throw error;
       }
     }
+    for (const userId of affectedUsers) {
+      await notifyMember(
+        userId,
+        'wallet',
+        `Transaction ${status}`,
+        status === 'rejected'
+          ? `An administrator reviewed a transaction and rejected it. Reason: ${note}`
+          : 'An administrator reviewed a transaction and marked it approved. This does not indicate a wallet credit or payout.',
+      );
+    }
     await audit({
       adminId: request.admin.id,
       action: 'transactions.bulk_reviewed',
       targetType: 'transactions',
-      details: { status, items },
+      details: { status, note: note || null, items },
       request,
     });
   })();
-  return response.json({ reviewed: items.length, status, walletBalancesChanged: false });
+  return response.json({ reviewed: items.length, status, note: note || null, walletBalancesChanged: false });
 });
 
 router.get('/rounds/:roundId/participants', async (request, response) => {
@@ -601,23 +828,29 @@ const listQueries = {
       users.last_seen_at AS lastSeenAt, wallets.balance_minor AS walletBalanceMinor
     FROM users LEFT JOIN wallets ON wallets.user_id = users.id
     WHERE users.is_demo = 0
-    ORDER BY users.created_at DESC LIMIT 500
+    ORDER BY users.created_at DESC
   `,
   deposits: `
     SELECT deposits.id, users.account_id AS accountId, users.display_name AS userName,
       deposits.amount_minor AS amountMinor, deposits.currency, deposits.status,
-      deposits.payment_reference AS paymentReference, deposits.created_at AS createdAt
+      deposits.payment_reference AS paymentReference, deposits.review_note AS reviewNote,
+      admin_users.username AS reviewedBy, deposits.reviewed_at AS reviewedAt,
+      deposits.created_at AS createdAt
     FROM deposits JOIN users ON users.id = deposits.user_id
+    LEFT JOIN admin_users ON admin_users.id = deposits.reviewed_by_admin_id
     WHERE users.is_demo = 0
-    ORDER BY deposits.created_at DESC LIMIT 500
+    ORDER BY deposits.created_at DESC
   `,
   withdrawals: `
     SELECT withdrawals.id, users.account_id AS accountId, users.display_name AS userName,
       withdrawals.amount_minor AS amountMinor, withdrawals.currency, withdrawals.status,
-      withdrawals.payment_reference AS paymentReference, withdrawals.created_at AS createdAt
+      withdrawals.payment_reference AS paymentReference, withdrawals.review_note AS reviewNote,
+      admin_users.username AS reviewedBy, withdrawals.reviewed_at AS reviewedAt,
+      withdrawals.created_at AS createdAt
     FROM withdrawals JOIN users ON users.id = withdrawals.user_id
+    LEFT JOIN admin_users ON admin_users.id = withdrawals.reviewed_by_admin_id
     WHERE users.is_demo = 0
-    ORDER BY withdrawals.created_at DESC LIMIT 500
+    ORDER BY withdrawals.created_at DESC
   `,
   signals: `
     SELECT id, market, direction, status, source, approved_at AS approvedAt, created_at AS createdAt
@@ -626,14 +859,14 @@ const listQueries = {
       SELECT 1 FROM trading_rounds
       WHERE trading_rounds.signal_id = trading_signals.id AND trading_rounds.mode = 'demo'
     )
-    ORDER BY created_at DESC LIMIT 500
+    ORDER BY created_at DESC
   `,
   trades: `
     SELECT trades.id, trades.round_id AS roundId, trades.mode, trades.contract_id AS contractId,
       trades.status, trades.actual_stake_minor AS actualStakeMinor,
       trades.payout_minor AS payoutMinor, trades.profit_loss_minor AS profitLossMinor,
       trades.currency, trades.confirmed_by_deriv AS confirmedByDeriv, trades.executed_at AS executedAt
-    FROM trades WHERE trades.mode = 'live' ORDER BY trades.created_at DESC LIMIT 500
+    FROM trades WHERE trades.mode = 'live' ORDER BY trades.created_at DESC
   `,
   rounds: `
     SELECT trading_rounds.id, trading_rounds.signal_id AS signalId, trading_rounds.mode,
@@ -645,7 +878,7 @@ const listQueries = {
     FROM trading_rounds
     LEFT JOIN round_participants ON round_participants.round_id = trading_rounds.id
     WHERE trading_rounds.mode = 'live'
-    GROUP BY trading_rounds.id ORDER BY trading_rounds.created_at DESC LIMIT 500
+    GROUP BY trading_rounds.id ORDER BY trading_rounds.created_at DESC
   `,
   ledger: `
     SELECT wallet_ledger.id, users.account_id AS accountId, users.display_name AS userName,
@@ -656,11 +889,11 @@ const listQueries = {
       wallet_ledger.created_at AS createdAt
     FROM wallet_ledger JOIN users ON users.id = wallet_ledger.user_id
     WHERE users.is_demo = 0
-    ORDER BY wallet_ledger.created_at DESC LIMIT 500
+    ORDER BY wallet_ledger.created_at DESC
   `,
   notifications: `
     SELECT id, severity, category, title, message, acknowledged_at AS acknowledgedAt, created_at AS createdAt
-    FROM notifications ORDER BY created_at DESC LIMIT 500
+    FROM notifications ORDER BY created_at DESC
   `,
   support: `
     SELECT support_requests.id, users.account_id AS accountId, users.display_name AS userName,
@@ -669,7 +902,7 @@ const listQueries = {
       support_requests.updated_at AS updatedAt
     FROM support_requests JOIN users ON users.id = support_requests.user_id
     WHERE users.is_demo = 0
-    ORDER BY support_requests.created_at DESC LIMIT 500
+    ORDER BY support_requests.created_at DESC
   `,
   audit: `
     SELECT audit_logs.id, admin_users.username AS admin, audit_logs.action,
@@ -677,18 +910,72 @@ const listQueries = {
       audit_logs.details_json AS details, audit_logs.ip_address AS ipAddress,
       audit_logs.created_at AS createdAt
     FROM audit_logs LEFT JOIN admin_users ON admin_users.id = audit_logs.admin_id
-    ORDER BY audit_logs.created_at DESC LIMIT 500
+    ORDER BY audit_logs.created_at DESC
   `,
   employees: `
-    SELECT id, username, role, created_at AS createdAt, last_login_at AS lastLoginAt
-    FROM admin_users ORDER BY created_at DESC LIMIT 500
+    SELECT id, username, role, permissions_json AS permissionsJson,
+      created_at AS createdAt, last_login_at AS lastLoginAt
+    FROM admin_users ORDER BY created_at DESC
   `,
+};
+
+const searchableFields = {
+  users: ['accountId', 'name', 'email'],
+  deposits: ['accountId', 'userName', 'paymentReference', 'id'],
+  withdrawals: ['accountId', 'userName', 'paymentReference', 'id'],
+  signals: ['market', 'direction', 'source'],
+  trades: ['contractId', 'status'],
+  rounds: ['id', 'status'],
+  ledger: ['accountId', 'userName', 'referenceId', 'entryType'],
+  notifications: ['severity', 'category', 'title'],
+  support: ['accountId', 'userName', 'subject', 'status'],
+  audit: ['admin', 'action', 'targetType', 'targetId'],
+  employees: ['username', 'role'],
 };
 
 router.get('/:resource', async (request, response) => {
   const query = listQueries[request.params.resource];
   if (!query) return response.status(404).json({ error: 'Admin resource not found.' });
-  return response.json({ records: await db.prepare(query).all() });
+  const page = Number(request.query.page || 1);
+  const pageSize = Number(request.query.pageSize || 25);
+  const search = typeof request.query.q === 'string' ? request.query.q.trim() : '';
+  const status = typeof request.query.status === 'string' ? request.query.status.trim() : '';
+  if (!Number.isInteger(page) || page < 1 || page > 100_000
+      || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100
+      || search.length > 100 || status.length > 40) {
+    return response.status(400).json({ error: 'List filters or pagination values are invalid.' });
+  }
+
+  const conditions = [];
+  const parameters = [];
+  if (status) {
+    if (!['users', 'deposits', 'withdrawals', 'trades', 'rounds', 'support'].includes(request.params.resource)) {
+      return response.status(400).json({ error: 'Status filtering is unavailable for this list.' });
+    }
+    conditions.push('status = ?');
+    parameters.push(status);
+  }
+  if (search) {
+    const fields = searchableFields[request.params.resource] || [];
+    conditions.push(`(${fields.map((field) => `LOWER(CAST(${field} AS TEXT)) LIKE ?`).join(' OR ')})`);
+    parameters.push(...fields.map(() => `%${search.toLowerCase()}%`));
+  }
+  const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+  const base = `SELECT * FROM (${query}) AS admin_resource${where}`;
+  const total = Number((await db.prepare(`SELECT COUNT(*) AS count FROM (${base}) AS filtered_resource`)
+    .get(...parameters)).count);
+  const pageCount = Math.ceil(total / pageSize);
+  const selectedPage = Math.min(page, Math.max(1, pageCount));
+  const records = await db.prepare(`${base} ORDER BY createdAt DESC LIMIT ? OFFSET ?`)
+    .all(...parameters, pageSize, (selectedPage - 1) * pageSize);
+  if (request.params.resource === 'employees') {
+    for (const record of records) record.permissions = parseJson(record.permissionsJson, []);
+    for (const record of records) delete record.permissionsJson;
+  }
+  return response.json({
+    records,
+    pagination: { page: selectedPage, pageSize, total, pageCount },
+  });
 });
 
 module.exports = router;

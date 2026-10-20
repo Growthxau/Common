@@ -133,13 +133,6 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     SMTP_FROM: 'G-Squad <no-reply@example.invalid>',
     NODE_ENV: 'development',
   };
-  const adminResult = spawnSync(process.execPath, ['scripts/create-admin.js'], {
-    cwd: root,
-    env,
-    encoding: 'utf8',
-  });
-  assert.equal(adminResult.status, 0, adminResult.stderr);
-
   child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, stdio: 'ignore' });
 
   const health = await waitForHealth(origin);
@@ -276,16 +269,22 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const createEmployee = await fetch(`${origin}/api/admin/employees`, {
     method: 'POST',
     headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'operations-staff', password: 'strong-employee-password-482!', role: 'admin' }),
+    body: JSON.stringify({
+      username: 'operations-staff',
+      password: 'strong-employee-password-482!',
+      role: 'admin',
+      permissions: ['transactions.read', 'transactions.review'],
+    }),
   });
   assert.equal(createEmployee.status, 201);
-  assert.equal((await createEmployee.json()).employee.role, 'admin');
+  assert.deepEqual((await createEmployee.json()).employee.permissions, ['transactions.read', 'transactions.review']);
   const employeeLogin = await fetch(`${origin}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ username: 'operations-staff', password: 'strong-employee-password-482!' }),
   });
   assert.equal(employeeLogin.status, 200);
+  assert.deepEqual((await employeeLogin.clone().json()).user.permissions, ['transactions.read', 'transactions.review']);
   const employeeCookie = employeeLogin.headers.getSetCookie()[0].split(';')[0];
   const employeeSettings = await fetch(`${origin}/api/admin/settings`, { headers: { Cookie: employeeCookie } });
   assert.equal(employeeSettings.status, 403);
@@ -314,7 +313,9 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     headers: { Cookie: employeeCookie, Origin: origin, 'Content-Type': 'application/json' },
     body: JSON.stringify({ status: 'approved', items: [{ type: 'deposits', id: 'bulk-deposit-1' }] }),
   });
-  assert.equal(employeeTransactionReview.status, 403);
+  assert.equal(employeeTransactionReview.status, 409);
+  const employeeMembersList = await fetch(`${origin}/api/admin/users`, { headers: { Cookie: employeeCookie } });
+  assert.equal(employeeMembersList.status, 403);
   const employeeRiskSettings = await fetch(`${origin}/api/admin/risk-settings`, {
     method: 'PUT',
     headers: { Cookie: employeeCookie, Origin: origin, 'Content-Type': 'application/json' },
@@ -532,6 +533,12 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(createAdminMember.status, 201);
   const adminMember = (await createAdminMember.json()).member;
   assert.match(adminMember.accountId, /^GSQ-[A-Z0-9]{6}$/);
+  const resendAdminMemberVerification = await fetch(`${origin}/api/admin/users/${adminMember.id}/recovery`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'resend_verification' }),
+  });
+  assert.equal(resendAdminMemberVerification.status, 200);
   const adminMemberVerifyToken = tokenFromEmail(sentEmails.at(-1), 'verify');
   const adminMemberVerify = await fetch(`${origin}/api/user/verify-email`, {
     method: 'POST',
@@ -571,6 +578,12 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   });
   assert.equal(memberDetailsResponse.status, 200);
   assert.equal((await memberDetailsResponse.json()).user.id, adminMember.id);
+  const memberExport = await fetch(`${origin}/api/admin/users/${adminMember.id}/export`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(memberExport.status, 200);
+  assert.match(memberExport.headers.get('content-disposition'), /member-GSQ-/);
+  assert.equal((await memberExport.json()).user.email, 'admin-created@example.com');
 
   const editAdminMember = await fetch(`${origin}/api/admin/users/${adminMember.id}`, {
     method: 'PATCH',
@@ -594,6 +607,21 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     { headers: { Cookie: cookie } },
   );
   assert.equal((await deactivatedLookup.json()).user.status, 'suspended');
+  const reactivateAdminMember = await fetch(`${origin}/api/admin/users/${adminMember.id}/recovery`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'reactivate' }),
+  });
+  assert.equal(reactivateAdminMember.status, 200);
+  const reactivatedLookup = await fetch(
+    `${origin}/api/admin/users/lookup?q=${encodeURIComponent('admin-created@example.com')}`,
+    { headers: { Cookie: cookie } },
+  );
+  assert.equal((await reactivatedLookup.json()).user.status, 'active');
+  await fetch(`${origin}/api/admin/users/${adminMember.id}`, {
+    method: 'DELETE',
+    headers: { Cookie: cookie, Origin: origin },
+  });
   const seededTransactions = spawnSync(process.execPath, ['-e', `
     const Database = require('better-sqlite3');
     const db = new Database(process.env.GSQUAD_DB_PATH);
@@ -602,11 +630,23 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     db.close();
   `], { cwd: root, env: { ...env, TEST_MEMBER_ID: loginResult.user.id }, encoding: 'utf8' });
   assert.equal(seededTransactions.status, 0, seededTransactions.stderr);
+  const employeeDepositRecords = await fetch(`${origin}/api/admin/deposits?page=1&pageSize=1`, {
+    headers: { Cookie: employeeCookie },
+  });
+  assert.equal(employeeDepositRecords.status, 200);
+  assert.equal((await employeeDepositRecords.json()).pagination.pageSize, 1);
+  const rejectWithoutReason = await fetch(`${origin}/api/admin/transactions/bulk-review`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'rejected', items: [{ type: 'deposits', id: 'bulk-deposit-1' }] }),
+  });
+  assert.equal(rejectWithoutReason.status, 400);
   const bulkReview = await fetch(`${origin}/api/admin/transactions/bulk-review`, {
     method: 'POST',
     headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       status: 'approved',
+      note: 'Reference checked',
       items: [
         { type: 'deposits', id: 'bulk-deposit-1' },
         { type: 'withdrawals', id: 'bulk-withdrawal-1' },
@@ -614,7 +654,12 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
     }),
   });
   assert.equal(bulkReview.status, 200);
-  assert.deepEqual(await bulkReview.json(), { reviewed: 2, status: 'approved', walletBalancesChanged: false });
+  assert.deepEqual(await bulkReview.json(), {
+    reviewed: 2,
+    status: 'approved',
+    note: 'Reference checked',
+    walletBalancesChanged: false,
+  });
   const replayBulkReview = await fetch(`${origin}/api/admin/transactions/bulk-review`, {
     method: 'POST',
     headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
@@ -627,8 +672,18 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const reviewedDeposit = (await (await fetch(`${origin}/api/admin/deposits`, { headers: { Cookie: cookie } })).json())
     .records.find((record) => record.id === 'bulk-deposit-1');
   assert.equal(reviewedDeposit.status, 'approved');
+  assert.equal(reviewedDeposit.reviewNote, 'Reference checked');
   const walletAfterReview = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
-  assert.equal((await walletAfterReview.json()).user.walletBalanceMinor, 0);
+  const walletAfterReviewBody = await walletAfterReview.json();
+  assert.equal(walletAfterReviewBody.user.walletBalanceMinor, 0);
+  const transactionNotification = spawnSync(process.execPath, ['-e', `
+    const Database = require('better-sqlite3');
+    const db = new Database(process.env.GSQUAD_DB_PATH, { readonly: true });
+    process.stdout.write(String(db.prepare("SELECT COUNT(*) AS count FROM user_notifications WHERE user_id = ? AND title = 'Transaction approved'").get(process.env.TEST_MEMBER_ID).count));
+    db.close();
+  `], { cwd: root, env: { ...env, TEST_MEMBER_ID: loginResult.user.id }, encoding: 'utf8' });
+  assert.equal(transactionNotification.status, 0, transactionNotification.stderr);
+  assert.equal(Number(transactionNotification.stdout), 1);
 
   const userLogin = await fetch(`${origin}/api/user/login`, {
     method: 'POST',

@@ -56,6 +56,13 @@ async function initialize() {
     ]) {
       await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
     }
+    for (const [table, column, definition] of [
+      ['admin_users', 'permissions_json', `TEXT NOT NULL DEFAULT '[]'`],
+      ['deposits', 'review_note', 'TEXT'],
+      ['withdrawals', 'review_note', 'TEXT'],
+    ]) {
+      await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+    }
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS admin_users_username_lower_unique ON admin_users (LOWER(username))');
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_unique ON users (LOWER(email))');
     await client.query(`

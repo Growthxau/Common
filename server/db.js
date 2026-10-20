@@ -16,6 +16,7 @@ db.exec(`
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'super_admin')),
+    permissions_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_login_at TEXT
   );
@@ -27,6 +28,12 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS admin_sessions_expiry_idx ON admin_sessions(expires_at);
+  CREATE TABLE IF NOT EXISTS admin_login_attempts (
+    username TEXT PRIMARY KEY,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    window_started_at TEXT NOT NULL,
+    locked_until TEXT
+  );
 
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -89,6 +96,7 @@ db.exec(`
     idempotency_key TEXT NOT NULL UNIQUE,
     reviewed_by_admin_id TEXT REFERENCES admin_users(id),
     reviewed_at TEXT,
+    review_note TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE UNIQUE INDEX IF NOT EXISTS deposits_payment_reference_unique
@@ -104,6 +112,7 @@ db.exec(`
     idempotency_key TEXT NOT NULL UNIQUE,
     reviewed_by_admin_id TEXT REFERENCES admin_users(id),
     reviewed_at TEXT,
+    review_note TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE UNIQUE INDEX IF NOT EXISTS withdrawals_payment_reference_unique
@@ -266,6 +275,15 @@ const userMigrations = [
 for (const [column, definition] of userMigrations) {
   if (!userColumns.has(column)) {
     db.exec(`ALTER TABLE users ADD COLUMN ${column} ${definition}`);
+  }
+
+  for (const [table, column, definition] of [
+    ['admin_users', 'permissions_json', `TEXT NOT NULL DEFAULT '[]'`],
+    ['deposits', 'review_note', 'TEXT'],
+    ['withdrawals', 'review_note', 'TEXT'],
+  ]) {
+    const columns = new Set(db.pragma(`table_info(${table})`).map((column) => column.name));
+    if (!columns.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
 
