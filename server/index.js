@@ -160,6 +160,7 @@ async function start() {
   if (production) {
     const buildDirectory = path.resolve('public');
     app.use(express.static(buildDirectory, { index: false, fallthrough: true }));
+    app.use(express.static(path.join(buildDirectory, 'site'), { index: false, fallthrough: true }));
     app.get(/.*/, (request, response, next) => {
       response.sendFile(path.join(buildDirectory, 'site', 'index.html'), (error) => {
         if (error) next(error);

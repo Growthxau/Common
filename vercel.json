@@ -1,5 +1,6 @@
 {
   "buildCommand": "npm run build",
+  "outputDirectory": "public/site",
   "functions": {
     "api/index.js": {
       "includeFiles": "server/db.js"
@@ -8,15 +9,15 @@
   "rewrites": [
     {
       "source": "/",
-      "destination": "/site/index.html"
+      "destination": "/index.html"
     },
     {
       "source": "/admin",
-      "destination": "/site/index.html"
+      "destination": "/index.html"
     },
     {
       "source": "/admin/:path*",
-      "destination": "/site/index.html"
+      "destination": "/index.html"
     }
   ]
 }

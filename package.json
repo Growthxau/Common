@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server/index.js --production",
     "dev": "node --env-file-if-exists=.env --watch server/index.js",
-    "build": "vite build --base=/site/",
+    "build": "vite build --base=/",
     "admin:create": "node --env-file-if-exists=.env scripts/create-admin.js",
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate-sqlite-to-neon.js",
     "test": "node --test"
