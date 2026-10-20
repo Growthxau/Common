@@ -81,10 +81,24 @@ npm test
 
 ## Deploy to Vercel with Neon
 
-1. Create a Neon Postgres database from the Vercel Marketplace and connect it to this project. Ensure Vercel provides the `DATABASE_URL` environment variable for Production (and Preview if needed). The app initializes and updates its schema on first request.
-2. Add the SMTP variables listed above in Vercel. Set `APP_ORIGIN` only when you want email links to use a custom HTTPS domain; otherwise the Vercel production URL is detected automatically.
-3. Deploy. Vercel serves the built Vite frontend from the public asset directory and runs the exported Express app as a Node.js function for API requests. The member portal is `/`; the admin portal is `/admin`.
-4. To carry over an existing local SQLite database, link the repository to the Vercel project, pull its Production variables into the ignored local `.env` file, then run:
+1. Create a Neon Postgres database from the Vercel Marketplace and connect it to this project. The integration provides `DATABASE_URL`.
+2. In Vercel **Project Settings → Environment Variables**, configure:
+
+   | Variable | When to set it |
+   | --- | --- |
+   | `DATABASE_URL` | **Required.** Neon Postgres connection string. Usually added automatically by the Neon Marketplace integration. |
+   | `ADMIN_USERNAME` | **Required only when the database has no admin account.** Username for the automatically provisioned first super-admin. |
+   | `ADMIN_PASSWORD` | **Required only when the database has no admin account.** Initial super-admin password; use at least 14 characters. |
+   | `GSQUAD_SECRETS_KEY` | **Recommended.** Base64-encoded 32-byte key; enables authenticator-app MFA and encrypted integration credentials. Generate with `openssl rand -base64 32`. Keep it private and do not change it after storing encrypted credentials. |
+   | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | **Optional, but required for member email verification and password recovery.** Configure all six using your email provider's SMTP settings. |
+   | `APP_ORIGIN` | **Optional.** Set only when email links should use a custom HTTPS domain. Otherwise Vercel's deployment URL is detected automatically. |
+   | `ADMIN_SESSION_DURATION_MINUTES` | **Optional.** Admin session length in minutes; integer from 15 to 720, default `60`. |
+   | `DERIV_APP_ID`, `DERIV_PAT` | **Optional.** Server-side fallback integration credentials only. They do not connect Deriv or enable trading; the admin UI can store encrypted credentials instead. |
+
+   Do not set `PORT` or `GSQUAD_DB_PATH` for Vercel. Vercel manages the port, and the app uses Neon rather than local SQLite when `DATABASE_URL` is set.
+3. For a fresh database, provide `ADMIN_USERNAME` and `ADMIN_PASSWORD` in the Vercel environment used by that deployment. The app automatically creates the initial super-admin on its first API request. If the database already has an admin, those bootstrap variables are not needed and will not replace existing admin credentials. If Production and Preview use separate empty databases, set the bootstrap credentials in both environments.
+4. Deploy. Vercel serves the built Vite frontend from the public asset directory and runs the exported Express app as a Node.js function for API requests. The member portal is `/`; the admin portal is `/admin`.
+5. To carry over an existing local SQLite database, link the repository to the Vercel project, pull its Production variables into the ignored local `.env` file, then run:
 
    ```sh
    vercel env pull .env --environment=production
@@ -92,8 +106,7 @@ npm test
    ```
 
    Run this once against a new, empty Neon database. The migration copies accounts, sessions, settings, audit records, and wallet/trading records. Do not run it again on a database that already contains those rows.
-5. For a fresh Neon database, set `ADMIN_USERNAME` and `ADMIN_PASSWORD` as Vercel environment variables (Production and any other deployment environments that need their own empty database). On the first API request, the app automatically creates the initial super-admin and initializes the schema. If you migrated an existing SQLite database, its admin accounts are preserved and the bootstrap credentials do not overwrite them.
 
-For Vercel deployments, `DATABASE_URL`, `ADMIN_USERNAME`, and `ADMIN_PASSWORD` must be configured when the target database has no admin account. If bootstrap credentials are missing or invalid on an empty database, the first request fails with a configuration error rather than creating a default or publicly known password. Configure `GSQUAD_SECRETS_KEY` to allow admins to enroll MFA and to encrypt integration secrets. The app fails clearly rather than using an ephemeral local SQLite file. Keep these values private. Set Vercel’s `DATABASE_URL` using the Neon Marketplace integration rather than committing it to the repository.
+If bootstrap credentials are missing or invalid on an empty database, the first request fails with a configuration error rather than creating a default or publicly known password. The app also fails clearly rather than using an ephemeral local SQLite file when `DATABASE_URL` is missing. Keep all secrets private; never commit them to the repository.
 
 If an API request fails with “The request could not be completed,” copy the reference ID shown in the response, then find the matching `requestId` in the Vercel function logs for `api/index.js`. Logs include the error type and database/runtime error code, but not raw error messages or credentials.
