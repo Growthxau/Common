@@ -244,6 +244,15 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   const savedSettings = (await saveSettings.json()).settings;
   assert.equal(savedSettings.defaultCurrency, 'EUR');
   assert.equal(savedSettings.appLogo, 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/xD8AAAAASUVORK5CYII=');
+  const malformedSettings = await fetch(`${origin}/api/admin/settings`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: '{"settings":',
+  });
+  assert.equal(malformedSettings.status, 400);
+  const malformedSettingsBody = await malformedSettings.json();
+  assert.match(malformedSettingsBody.requestId, /^[0-9a-f-]{36}$/);
+  assert.equal(malformedSettings.headers.get('x-request-id'), malformedSettingsBody.requestId);
   const updatedPublicSettings = await fetch(`${origin}/api/app-settings`);
   assert.deepEqual((await updatedPublicSettings.json()).settings, {
     organizationName: 'G-Squad Operations',

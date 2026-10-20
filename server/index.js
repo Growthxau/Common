@@ -1,4 +1,5 @@
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const express = require('express');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
@@ -14,6 +15,13 @@ const port = Number(process.env.PORT) || 3000;
 const production = process.argv.includes('--production') || process.env.NODE_ENV === 'production';
 
 if (production) process.env.NODE_ENV = 'production';
+
+app.use((request, response, next) => {
+  const requestId = randomUUID();
+  response.locals.requestId = requestId;
+  response.set('X-Request-Id', requestId);
+  next();
+});
 
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY || (production ? false : 'loopback'));
@@ -145,14 +153,22 @@ app.use('/api/admin', requireAdmin, adminRouter);
 app.use('/api', (request, response) => response.status(404).json({ error: 'API route not found.' }));
 
 app.use((error, request, response, next) => {
+  const status = Number.isInteger(error.status) && error.status >= 400 && error.status < 500
+    ? error.status
+    : 500;
   console.error('Request failed:', {
+    requestId: response.locals.requestId,
     method: request.method,
     path: request.path,
     type: error.type || error.name,
-    status: error.status,
+    code: error.code,
+    status,
   });
   if (response.headersSent) return next(error);
-  return response.status(500).json({ error: 'The request could not be completed.' });
+  return response.status(status).json({
+    error: status === 500 ? 'The request could not be completed.' : 'Invalid request.',
+    requestId: response.locals.requestId,
+  });
 });
 
 async function start() {

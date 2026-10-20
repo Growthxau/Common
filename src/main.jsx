@@ -40,7 +40,9 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    const error = new Error(body.error || 'The request could not be completed.');
+    const message = body.error || 'The request could not be completed.';
+    const reference = body.requestId ? ` (Reference: ${body.requestId})` : '';
+    const error = new Error(`${message}${reference}`);
     error.status = response.status;
     throw error;
   }

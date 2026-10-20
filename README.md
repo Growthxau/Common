@@ -102,3 +102,5 @@ npm test
    Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` in the local `.env` first. The admin account is stored in Neon and can then sign in at `/admin`. If you migrated an existing SQLite database, its administrator accounts were copied too; sign in with an existing account instead of running this command.
 
 For Vercel deployments, `DATABASE_URL` is required; the app fails clearly rather than using an ephemeral local SQLite file. Keep the Neon connection string private. Set Vercel’s `DATABASE_URL` using the Neon Marketplace integration rather than committing it to the repository.
+
+If an API request fails with “The request could not be completed,” copy the reference ID shown in the response, then find the matching `requestId` in the Vercel function logs for `api/index.js`. Logs include the error type and database/runtime error code, but not raw error messages or credentials.
