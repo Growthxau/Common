@@ -18,10 +18,10 @@ let applicationSettings = {
 };
 
 const pageDetails = {
-  users: { title: 'User management', subtitle: 'Review account status, wallet figures, configured stakes, and member participation preferences.', resource: 'users', columns: [['accountId', 'Account ID'], ['name', 'Name'], ['email', 'Email'], ['emailVerified', 'Email verified'], ['walletBalanceMinor', 'Wallet'], ['configuredStakeMinor', 'Configured stake'], ['botEnabled', 'Participation'], ['status', 'Account'], ['lastSeenAt', 'Last active']] },
+  users: { title: 'User management', subtitle: 'Find members by account ID or email, manage access, and review member activity.', resource: 'users', columns: [['accountId', 'Account ID'], ['name', 'Name'], ['email', 'Email'], ['emailVerified', 'Email verified'], ['walletBalanceMinor', 'Wallet'], ['configuredStakeMinor', 'Configured stake'], ['botEnabled', 'Participation'], ['status', 'Account'], ['lastSeenAt', 'Last active']] },
   employees: { title: 'Employee access', subtitle: 'Provision employee administrator accounts and assign access roles.', resource: 'employees', columns: [['username', 'Username'], ['role', 'Role'], ['createdAt', 'Created'], ['lastLoginAt', 'Last sign-in']] },
-  deposits: { title: 'Deposits', subtitle: 'Deposit records. Payment verification and crediting are not enabled.', resource: 'deposits', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
-  withdrawals: { title: 'Withdrawals', subtitle: 'Withdrawal records. Payout processing is not enabled.', resource: 'withdrawals', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
+  deposits: { title: 'Deposits', subtitle: 'Review pending deposit records. Approval records a decision only; it does not credit a wallet.', resource: 'deposits', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
+  withdrawals: { title: 'Withdrawals', subtitle: 'Review pending withdrawal records. Approval records a decision only; it does not pay out funds.', resource: 'withdrawals', columns: [['userName', 'User'], ['accountId', 'Account ID'], ['amountMinor', 'Amount'], ['paymentReference', 'Reference'], ['status', 'Status'], ['createdAt', 'Requested']] },
   trades: { title: 'Trade history', subtitle: 'Only Deriv-confirmed execution results may be reported as real trades.', resource: 'trades', columns: [['mode', 'Mode'], ['contractId', 'Contract ID'], ['actualStakeMinor', 'Actual stake'], ['payoutMinor', 'Payout'], ['profitLossMinor', 'Profit / loss'], ['confirmedByDeriv', 'Deriv confirmed'], ['status', 'Execution'], ['executedAt', 'Timestamp']] },
   profit: { title: 'Profit sharing', subtitle: 'Frozen participants, contributions, proportional allocations, and settlement status.', resource: 'rounds', columns: [['mode', 'Mode'], ['id', 'Round'], ['participantCount', 'Participants'], ['combinedStakeMinor', 'Combined stake'], ['status', 'Settlement'], ['contractId', 'Contract ID'], ['createdAt', 'Created']] },
   ledger: { title: 'Wallet ledger', subtitle: 'An append-only record of every wallet credit, debit, and adjustment.', resource: 'ledger', columns: [['createdAt', 'Timestamp'], ['accountId', 'Account ID'], ['userName', 'User'], ['entryType', 'Entry'], ['direction', 'Direction'], ['amountMinor', 'Amount'], ['balanceAfterMinor', 'Balance after'], ['referenceId', 'Reference']] },
@@ -555,6 +555,217 @@ function EmployeesPage({ data, loading, error, onRetry }) {
   );
 }
 
+function MembersPage({ data, loading, error, onRetry }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [lookup, setLookup] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [memberDetails, setMemberDetails] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const [formError, setFormError] = useState('');
+  const [password, setPassword] = useState('');
+
+  async function createMember(event) {
+    event.preventDefault();
+    setBusy(true);
+    setFeedback('');
+    setFormError('');
+    try {
+      const result = await api('/api/admin/members', {
+        method: 'POST',
+        body: JSON.stringify({ name, email }),
+      });
+      setName('');
+      setEmail('');
+      setFeedback(`Member created (${result.member.accountId}). A verification link was sent to ${result.member.email}.`);
+      onRetry();
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function findMember(event) {
+    event.preventDefault();
+    setBusy(true);
+    setFeedback('');
+    setFormError('');
+    setSelected(null);
+    setMemberDetails(null);
+    try {
+      const result = await api(`/api/admin/users/lookup?q=${encodeURIComponent(lookup)}`);
+      if (!result.user) {
+        setFormError('No member was found with that exact account ID or email.');
+      } else {
+        await openMember(result.user.id);
+      }
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openMember(id) {
+    setBusy(true);
+    setFormError('');
+    try {
+      const result = await api(`/api/admin/users/${encodeURIComponent(id)}`);
+      setMemberDetails(result);
+      setSelected({ ...result.user });
+      setPassword('');
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveMember(event) {
+    event.preventDefault();
+    setBusy(true);
+    setFeedback('');
+    setFormError('');
+    try {
+      await api(`/api/admin/users/${encodeURIComponent(selected.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: selected.name, email: selected.email, status: selected.status }),
+      });
+      setFeedback('Member information saved.');
+      await openMember(selected.id);
+      onRetry();
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setMemberPassword(event) {
+    event.preventDefault();
+    setBusy(true);
+    setFeedback('');
+    setFormError('');
+    try {
+      await api(`/api/admin/users/${encodeURIComponent(selected.id)}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      });
+      setPassword('');
+      setFeedback('Password updated and existing member sessions revoked.');
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deactivateMember() {
+    if (!window.confirm(`Deactivate ${selected.name}'s account? Their records will be retained.`)) return;
+    setBusy(true);
+    setFeedback('');
+    setFormError('');
+    try {
+      await api(`/api/admin/users/${encodeURIComponent(selected.id)}`, { method: 'DELETE' });
+      setSelected((current) => ({ ...current, status: 'suspended', botEnabled: false }));
+      setMemberDetails((current) => ({ ...current, user: { ...current.user, status: 'suspended', botEnabled: false } }));
+      setFeedback('Account deactivated. Its history has been retained.');
+      onRetry();
+    } catch (requestError) {
+      setFormError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) return <LoadingPanel label="Loading member accounts…" />;
+  if (error) return <ErrorPanel message={error} onRetry={onRetry} />;
+  const records = data?.records || [];
+  return (
+    <div className="page-stack">
+      <PageHeading title="User management" subtitle="Create members, find accounts by exact account ID or email, manage credentials, and review member activity." />
+      <form className="surface-card config-form" onSubmit={createMember}>
+        <div className="section-heading"><div><h2>Create member</h2><p>A verification link is sent to the member's email. After verifying, the member can use “Forgot password?” to set their first password.</p></div></div>
+        <div className="form-grid">
+          <label className="form-field"><span>Member name</span><input minLength="2" maxLength="80" required value={name} onChange={(event) => setName(event.target.value)} /></label>
+          <label className="form-field"><span>Email address</span><input type="email" maxLength="254" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+        </div>
+        {formError && <p className="inline-error" role="alert">{formError}</p>}
+        {feedback && <p className="form-feedback" role="status">{feedback}</p>}
+        <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Working…' : 'Create member'}</button></div>
+      </form>
+
+      <section className="surface-card detail-card">
+        <div className="section-heading"><div><h2>Find a member</h2><p>Search by exact account ID or email address.</p></div></div>
+        <form className="member-lookup-form" onSubmit={findMember}>
+          <label className="form-field"><span>Account ID or email</span><input minLength="3" maxLength="254" required value={lookup} onChange={(event) => setLookup(event.target.value)} placeholder="GSQ-ABC123 or name@example.com" /></label>
+          <button className="button button-primary" type="submit" disabled={busy}>Find member</button>
+        </form>
+        {formError && <p className="inline-error" role="alert">{formError}</p>}
+        {feedback && <p className="form-feedback" role="status">{feedback}</p>}
+      </section>
+
+      {selected && memberDetails && <section className="surface-card detail-card member-detail">
+        <div className="section-heading"><div><h2>{selected.name}</h2><p>{selected.accountId} · {selected.email}</p></div><button className="button button-subtle" type="button" onClick={() => { setSelected(null); setMemberDetails(null); }}>Close</button></div>
+        <div className="member-summary">
+          <StatusLine label="Account status" value={selected.status} />
+          <StatusLine label="Email verified" value={selected.emailVerified ? 'Yes' : 'No'} />
+          <StatusLine label="Wallet balance" value={money(selected.walletBalanceMinor, selected.currency)} />
+          <StatusLine label="Last active" value={dateLabel(selected.lastSeenAt)} />
+        </div>
+        <form className="config-form config-form-compact" onSubmit={saveMember}>
+          <p className="member-edit-note">Changing the email address requires the member to verify the new address before signing in. Suspending an account revokes active sessions.</p>
+          <div className="form-grid">
+            <label className="form-field"><span>Name</span><input minLength="2" maxLength="80" required value={selected.name} onChange={(event) => setSelected({ ...selected, name: event.target.value })} /></label>
+            <label className="form-field"><span>Email</span><input type="email" maxLength="254" required value={selected.email} onChange={(event) => setSelected({ ...selected, email: event.target.value })} /></label>
+            <label className="form-field"><span>Account status</span><select value={selected.status} onChange={(event) => setSelected({ ...selected, status: event.target.value })}><option value="active">Active</option><option value="suspended">Suspended</option></select></label>
+          </div>
+          {formError && <p className="inline-error" role="alert">{formError}</p>}
+          <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save member information'}</button></div>
+        </form>
+        <form className="config-form config-form-compact member-password-form" onSubmit={setMemberPassword}>
+          <div className="section-heading"><div><h2>Set a new password</h2><p>Minimum 14 characters. Saving revokes all existing member sessions.</p></div></div>
+          <div className="member-lookup-form">
+            <label className="form-field"><span>New password</span><input type="password" minLength="14" maxLength="1024" autoComplete="new-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+            <button className="button button-subtle" type="submit" disabled={busy}>Set password</button>
+          </div>
+        </form>
+        <div className="section-heading member-activity-heading"><div><h2>Member activity and transactions</h2><p>Recent records per category, with the latest 100 shown.</p></div></div>
+        <MemberActivity activity={memberDetails.activity} currency={selected.currency} />
+        {selected.status !== 'suspended' && <div className="form-actions member-deactivate"><button className="button button-danger" type="button" disabled={busy} onClick={deactivateMember}>Deactivate account</button></div>}
+      </section>}
+
+      {!records.length ? <div className="surface-card empty-state"><strong>No members yet</strong><span>Members created here or through signup will appear in this list.</span></div> : <section className="surface-card table-card">
+        <div className="section-heading table-heading"><div><h2>Members</h2><p>Open a member record to manage access and review activity.</p></div></div>
+        <div className="table-scroll"><table className="data-table"><thead><tr><th scope="col">Account ID</th><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Status</th><th scope="col">Activity</th></tr></thead><tbody>
+          {records.map((record) => <tr key={record.id}><td data-label="Account ID">{record.accountId}</td><td data-label="Name">{record.name}</td><td data-label="Email">{record.email}</td><td data-label="Status"><CellValue value={record.status} record={record} field="status" /></td><td data-label="Activity"><button className="table-action" type="button" disabled={busy} onClick={() => openMember(record.id)}>Manage & view activity</button></td></tr>)}
+        </tbody></table></div>
+      </section>}
+    </div>
+  );
+}
+
+function MemberActivity({ activity, currency }) {
+  const categories = [
+    ['Deposits', activity.deposits, [['amountMinor', 'Amount'], ['status', 'Status'], ['paymentReference', 'Reference'], ['createdAt', 'Date']]],
+    ['Withdrawals', activity.withdrawals, [['amountMinor', 'Amount'], ['status', 'Status'], ['paymentReference', 'Reference'], ['createdAt', 'Date']]],
+    ['Wallet ledger', activity.ledger, [['entryType', 'Entry'], ['direction', 'Direction'], ['amountMinor', 'Amount'], ['balanceAfterMinor', 'Balance after'], ['createdAt', 'Date']]],
+    ['Trades', activity.trades, [['contractId', 'Contract'], ['status', 'Status'], ['actualStakeMinor', 'Stake'], ['profitLossMinor', 'Profit / loss'], ['executedAt', 'Date']]],
+    ['Support requests', activity.support, [['subject', 'Subject'], ['status', 'Status'], ['createdAt', 'Date']]],
+    ['Account events', activity.audit, [['action', 'Event'], ['createdAt', 'Date']]],
+  ];
+  return <div className="member-activity-grid">
+    {categories.map(([title, entries, fields]) => <section className="member-activity-category" key={title}>
+      <h3>{title} <span>{entries.length}</span></h3>
+      {!entries.length ? <p className="muted">No records.</p> : <div className="table-scroll"><table className="data-table"><thead><tr>{fields.map(([, label]) => <th scope="col" key={label}>{label}</th>)}</tr></thead><tbody>
+        {entries.map((entry) => <tr key={entry.id || `${entry.action}-${entry.createdAt}`}>{fields.map(([key, label]) => <td data-label={label} key={key}><CellValue value={entry[key]} record={{ ...entry, currency: entry.currency || currency }} field={key} /></td>)}</tr>)}
+      </tbody></table></div>}
+    </section>)}
+  </div>;
+}
+
 function SecurityPage({ user, data, loading, error, onRetry }) {
   if (loading) return <LoadingPanel label="Loading security settings…" />;
   if (error) return <ErrorPanel message={error} onRetry={onRetry} />;
@@ -587,22 +798,63 @@ function RecordPage({
   roundError,
 }) {
   const [filter, setFilter] = useState('');
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState('');
   useEffect(() => setFilter(''), [config.resource]);
+  useEffect(() => {
+    setSelectedIds([]);
+    setReviewMessage('');
+  }, [config.resource]);
   if (loading) return <LoadingPanel label={`Loading ${config.title.toLowerCase()}…`} />;
   if (error) return <ErrorPanel message={error} onRetry={onRetry} />;
   const records = data?.records || [];
   const visibleRecords = config.resource === 'users' && filter
     ? records.filter((record) => `${record.name} ${record.email} ${record.accountId}`.toLowerCase().includes(filter.toLowerCase()))
     : records;
+  const isReviewable = ['deposits', 'withdrawals'].includes(config.resource);
+  const pendingRecords = visibleRecords.filter((record) => record.status === 'pending' && record.id);
+
+  async function reviewSelected(status) {
+    setReviewBusy(true);
+    setReviewMessage('');
+    try {
+      const result = await api('/api/admin/transactions/bulk-review', {
+        method: 'POST',
+        body: JSON.stringify({
+          status,
+          items: selectedIds.map((id) => ({ type: config.resource, id })),
+        }),
+      });
+      setSelectedIds([]);
+      setReviewMessage(`${result.reviewed} transaction${result.reviewed === 1 ? '' : 's'} ${status}. Wallet balances were not changed.`);
+      onRetry();
+    } catch (requestError) {
+      setReviewMessage(requestError.message);
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
   return (
     <section className="surface-card table-card">
       <div className="section-heading table-heading"><div><h2>{config.title}</h2><p>{config.subtitle}</p></div>
         {config.resource === 'users' && <label className="search-box"><span aria-hidden="true">⌕</span><input type="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search users" aria-label="Search users" /></label>}
       </div>
+      {isReviewable && <div className="bulk-review-bar">
+        <label className="bulk-select"><input type="checkbox" aria-label="Select all pending transactions" checked={pendingRecords.length > 0 && pendingRecords.every((record) => selectedIds.includes(record.id))} onChange={(event) => setSelectedIds(event.target.checked ? pendingRecords.map((record) => record.id) : [])} /> Select pending</label>
+        <span>{selectedIds.length} selected · review only, no funds moved</span>
+        <div className="bulk-review-actions">
+          <button className="button button-primary" type="button" disabled={!selectedIds.length || reviewBusy} onClick={() => reviewSelected('approved')}>Approve selected</button>
+          <button className="button button-danger" type="button" disabled={!selectedIds.length || reviewBusy} onClick={() => reviewSelected('rejected')}>Reject selected</button>
+        </div>
+      </div>}
+      {reviewMessage && <p className="bulk-review-message" role="status">{reviewMessage}</p>}
       {visibleRecords.length === 0
         ? <div className="empty-state"><span className="empty-state-icon">▤</span><strong>{records.length ? 'No matching records' : 'No records yet'}</strong><span>{records.length ? 'Try a different search.' : 'When verified data is added, it will appear here.'}</span></div>
-        : <div className="table-scroll"><table className="data-table"><thead><tr>{config.columns.map(([, label]) => <th key={label} scope="col">{label}</th>)}{config.resource === 'rounds' && <th scope="col">Participants</th>}</tr></thead><tbody>
+        : <div className="table-scroll"><table className="data-table"><thead><tr>{isReviewable && <th scope="col">Select</th>}{config.columns.map(([, label]) => <th key={label} scope="col">{label}</th>)}{config.resource === 'rounds' && <th scope="col">Participants</th>}</tr></thead><tbody>
           {visibleRecords.map((record) => <tr key={record.id || `${record.accountId}-${record.createdAt}`}>
+            {isReviewable && <td data-label="Select">{record.status === 'pending' ? <input type="checkbox" aria-label={`Select ${record.id}`} checked={selectedIds.includes(record.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, record.id] : current.filter((id) => id !== record.id))} /> : <span className="muted">—</span>}</td>}
             {config.columns.map(([key, label]) => <td key={key} data-label={label}><CellValue value={record[key]} record={record} field={key} /></td>)}
             {config.resource === 'rounds' && <td data-label="Participants"><button className="table-action" type="button" onClick={() => onSelectRound(record.id)}>View frozen list</button></td>}
           </tr>)}
@@ -664,6 +916,7 @@ function PageContent({ page, overview, pageData, pageLoading, pageError, onRetry
   if (page === 'risk') return <RiskPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'settings') return <ApplicationSettingsPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} onSettingsChanged={onSettingsChanged} />;
   if (page === 'employees') return <EmployeesPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
+  if (page === 'users') return <MembersPage data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'security') return <SecurityPage user={user} data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} />;
   if (page === 'engine') return <EnginePage metrics={overview.data?.metrics} data={pageData} loading={pageLoading || overview.loading} error={pageError || overview.error} onRetry={onRetry} />;
   return <div className="page-stack"><PageHeading title={pageDetails[page].title} subtitle={pageDetails[page].subtitle} /><RecordPage config={pageDetails[page]} data={pageData} loading={pageLoading} error={pageError} onRetry={onRetry} {...(page === 'profit' ? roundProps : {})} /></div>;

@@ -49,9 +49,11 @@ Set `NODE_ENV=production` when deploying behind TLS. On Vercel, the app detects 
 ## Administration
 
 - **Employee access:** Super-admins can provision employee accounts and assign either `admin` (read-only operational access) or `super_admin` (full administrative access). Initial passwords must be at least 14 characters.
+- **Member management:** Super-admins can create members with email verification (members set their initial password through **Forgot password?** after verifying), find an exact account ID or email, edit the member name/email/status, set a replacement password, and review recent deposit, withdrawal, wallet-ledger, trade, support, and account-event history. Deleting a member deactivates the account, revokes sessions, and preserves its financial and audit records.
+- **Transaction review:** Super-admins can select and approve or reject up to 100 pending deposit/withdrawal records at once. This records the review decision only; it does not credit wallets or initiate payouts. Payment processing remains disabled.
 - **Application settings:** Super-admins can configure organization name, support email, default currency, timezone, a PNG/JPEG/WebP application logo (up to 1 MB), and Deriv App ID. The logo is used throughout both portals and is shown by itself on the eight-second splash screen. A Deriv PAT can be replaced through the UI; it is encrypted with AES-256-GCM before storage, masked from API responses, and audited without recording its value. The encryption key must be supplied by the deployment environment. Deriv connection testing is not implemented.
 - **Risk management:** Super-admins can record daily loss/profit targets, combined-stake and exposure limits, and the emergency-stop setting. These settings do not enable execution.
-- **Audit:** Sign-ins, employee creation, and configuration changes are recorded in the append-only audit log.
+- **Audit:** Sign-ins, employee and member administration, transaction review, and configuration changes are recorded in the append-only audit log.
 - Legacy records previously marked as synthetic are hidden from ordinary account, payment, support, and liability views; they are retained rather than destructively deleted.
 
 ## Member portal

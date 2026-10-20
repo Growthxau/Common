@@ -621,6 +621,7 @@ router.post('/support', async (request, response) => {
 });
 
 module.exports = {
+  createAccountId,
   login,
   logout,
   register,

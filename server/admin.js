@@ -1,11 +1,13 @@
 const express = require('express');
-const { randomUUID } = require('node:crypto');
+const { randomBytes, randomUUID } = require('node:crypto');
 const db = require('./database');
-const { audit, hashPassword } = require('./auth');
+const { audit, hashPassword, hashToken } = require('./auth');
 const { encryptSecret } = require('./secrets');
+const { createAccountId } = require('./user');
+const { sendAccountLink, smtpConfiguration } = require('./mailer');
 
 const router = express.Router();
-const elevatedResources = new Set(['users', 'employees', 'connection', 'settings', 'deriv-credentials', 'risk-settings', 'deposits', 'withdrawals', 'rounds', 'ledger', 'audit']);
+const elevatedResources = new Set(['users', 'members', 'transactions', 'employees', 'connection', 'settings', 'deriv-credentials', 'risk-settings', 'deposits', 'withdrawals', 'rounds', 'ledger', 'audit']);
 
 const defaultSettings = {
   organizationName: 'G-Squad',
@@ -329,6 +331,241 @@ router.post('/employees', async (request, response) => {
     throw error;
   }
   return response.status(201).json({ employee: { id, username, role } });
+});
+
+router.post('/members', async (request, response) => {
+  const name = typeof request.body?.name === 'string' ? request.body.name.trim() : '';
+  const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : '';
+  if (name.length < 2 || name.length > 80
+      || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return response.status(400).json({ error: 'Enter a valid member name and email address.' });
+  }
+  if (!smtpConfiguration()) {
+    return response.status(503).json({ error: 'Member creation is unavailable because email verification is not configured.' });
+  }
+
+  const id = randomUUID();
+  const verificationToken = randomBytes(32).toString('base64url');
+  const verificationExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  let accountId;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    accountId = createAccountId();
+    try {
+      await db.transaction(async () => {
+        await db.prepare(`
+          INSERT INTO users (id, account_id, display_name, email, currency, email_verified)
+          VALUES (?, ?, ?, ?, 'USD', 0)
+        `).run(id, accountId, name, email);
+        await db.prepare('INSERT INTO wallets (id, user_id, currency, balance_minor) VALUES (?, ?, ?, 0)')
+          .run(randomUUID(), id, 'USD');
+        await db.prepare(`
+          INSERT INTO user_action_tokens (token_hash, user_id, action, expires_at)
+          VALUES (?, ?, 'verify_email', ?)
+        `).run(hashToken(verificationToken), id, verificationExpiresAt);
+        await audit({
+          adminId: request.admin.id,
+          action: 'member.created',
+          targetType: 'user',
+          targetId: id,
+          details: { accountId, email },
+          request,
+        });
+      })();
+      break;
+    } catch (error) {
+      if (error.code !== 'SQLITE_CONSTRAINT_UNIQUE' && error.code !== '23505') throw error;
+      if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
+        return response.status(409).json({ error: 'A member with that email already exists.' });
+      }
+      if (attempt === 2) throw error;
+    }
+  }
+
+  try {
+    await sendAccountLink({ request, email, name, token: verificationToken, type: 'verify_email' });
+  } catch (error) {
+    console.error('Could not send admin-created member verification email:', error.message);
+    return response.status(503).json({
+      error: 'The member account was created, but the verification email could not be sent. Resend verification from the member sign-in page.',
+      nextStep: 'resend_verification',
+    });
+  }
+  return response.status(201).json({ member: { id, accountId, name, email, status: 'active' } });
+});
+
+router.get('/users/lookup', async (request, response) => {
+  const query = typeof request.query.q === 'string' ? request.query.q.trim() : '';
+  if (query.length < 3 || query.length > 254) {
+    return response.status(400).json({ error: 'Enter an account ID or email address.' });
+  }
+  const user = await db.prepare(`
+    SELECT users.id, users.account_id AS accountId, users.display_name AS name,
+      users.email, users.email_verified AS emailVerified, users.status,
+      users.bot_enabled AS botEnabled, users.configured_stake_minor AS configuredStakeMinor,
+      users.currency, users.created_at AS createdAt, users.last_seen_at AS lastSeenAt,
+      wallets.balance_minor AS walletBalanceMinor
+    FROM users LEFT JOIN wallets ON wallets.user_id = users.id
+    WHERE users.is_demo = 0 AND (LOWER(users.account_id) = LOWER(?) OR LOWER(users.email) = LOWER(?))
+  `).get(query, query);
+  return response.json({ user: user || null });
+});
+
+router.patch('/users/:userId', async (request, response) => {
+  const name = typeof request.body?.name === 'string' ? request.body.name.trim() : '';
+  const email = typeof request.body?.email === 'string' ? request.body.email.trim().toLowerCase() : '';
+  const status = request.body?.status;
+  if (name.length < 2 || name.length > 80
+      || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+      || !['active', 'suspended'].includes(status)) {
+    return response.status(400).json({ error: 'Member name, email, or account status is invalid.' });
+  }
+  const user = await db.prepare('SELECT id, email FROM users WHERE id = ? AND is_demo = 0').get(request.params.userId);
+  if (!user) return response.status(404).json({ error: 'Member not found.' });
+  try {
+    await db.transaction(async () => {
+      await db.prepare(`
+        UPDATE users SET display_name = ?, email = ?, status = ?,
+          email_verified = CASE WHEN email = ? THEN email_verified ELSE 0 END,
+          bot_enabled = CASE WHEN ? = 'active' THEN bot_enabled ELSE 0 END
+        WHERE id = ?
+      `).run(name, email, status, email, status, user.id);
+      if (status !== 'active' || email !== user.email) {
+        await db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(user.id);
+      }
+      if (status !== 'active' || email !== user.email) {
+        await db.prepare('DELETE FROM user_action_tokens WHERE user_id = ?').run(user.id);
+      }
+      await audit({
+        adminId: request.admin.id,
+        action: 'member.updated',
+        targetType: 'user',
+        targetId: user.id,
+        details: { name, email, status },
+        request,
+      });
+    })();
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE' || error.code === '23505') {
+      return response.status(409).json({ error: 'A member with that email already exists.' });
+    }
+    throw error;
+  }
+  return response.json({ updated: true });
+});
+
+router.post('/users/:userId/password', async (request, response) => {
+  const password = typeof request.body?.password === 'string' ? request.body.password : '';
+  if (password.length < 14 || password.length > 1024) {
+    return response.status(400).json({ error: 'Use a password between 14 and 1024 characters.' });
+  }
+  const user = await db.prepare('SELECT id FROM users WHERE id = ? AND is_demo = 0').get(request.params.userId);
+  if (!user) return response.status(404).json({ error: 'Member not found.' });
+  const passwordHash = await hashPassword(password);
+  await db.transaction(async () => {
+    await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, user.id);
+    await db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(user.id);
+    await db.prepare('DELETE FROM user_action_tokens WHERE user_id = ?').run(user.id);
+    await audit({
+      adminId: request.admin.id,
+      action: 'member.password_reset_by_admin',
+      targetType: 'user',
+      targetId: user.id,
+      request,
+    });
+  })();
+  return response.json({ updated: true });
+});
+
+router.delete('/users/:userId', async (request, response) => {
+  const user = await db.prepare('SELECT id FROM users WHERE id = ? AND is_demo = 0').get(request.params.userId);
+  if (!user) return response.status(404).json({ error: 'Member not found.' });
+  await db.transaction(async () => {
+    await db.prepare("UPDATE users SET status = 'suspended', bot_enabled = 0 WHERE id = ?").run(user.id);
+    await db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(user.id);
+    await db.prepare('DELETE FROM user_action_tokens WHERE user_id = ?').run(user.id);
+    await audit({
+      adminId: request.admin.id,
+      action: 'member.deactivated',
+      targetType: 'user',
+      targetId: user.id,
+      request,
+    });
+  })();
+  return response.json({ deactivated: true });
+});
+
+router.get('/users/:userId', async (request, response) => {
+  const user = await db.prepare(`
+    SELECT users.id, users.account_id AS accountId, users.display_name AS name,
+      users.email, users.email_verified AS emailVerified, users.status,
+      users.bot_enabled AS botEnabled, users.configured_stake_minor AS configuredStakeMinor,
+      users.currency, users.created_at AS createdAt, users.last_seen_at AS lastSeenAt,
+      wallets.balance_minor AS walletBalanceMinor
+    FROM users LEFT JOIN wallets ON wallets.user_id = users.id
+    WHERE users.id = ? AND users.is_demo = 0
+  `).get(request.params.userId);
+  if (!user) return response.status(404).json({ error: 'Member not found.' });
+  const [deposits, withdrawals, ledger, trades, support, activity] = await Promise.all([
+    db.prepare(`SELECT id, amount_minor AS amountMinor, currency, status, payment_reference AS paymentReference, created_at AS createdAt
+      FROM deposits WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
+    db.prepare(`SELECT id, amount_minor AS amountMinor, currency, status, payment_reference AS paymentReference, created_at AS createdAt
+      FROM withdrawals WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
+    db.prepare(`SELECT id, entry_type AS entryType, direction, amount_minor AS amountMinor, currency,
+      balance_after_minor AS balanceAfterMinor, reference_type AS referenceType, reference_id AS referenceId,
+      created_at AS createdAt FROM wallet_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
+    db.prepare(`SELECT trades.id, trades.contract_id AS contractId, trades.status, trades.actual_stake_minor AS actualStakeMinor,
+      trades.payout_minor AS payoutMinor, trades.profit_loss_minor AS profitLossMinor, trades.currency,
+      trades.executed_at AS executedAt FROM trades JOIN round_participants
+      ON round_participants.round_id = trades.round_id WHERE round_participants.user_id = ?
+      ORDER BY trades.created_at DESC LIMIT 100`).all(user.id),
+    db.prepare(`SELECT id, subject, message, status, response, created_at AS createdAt, updated_at AS updatedAt
+      FROM support_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
+    db.prepare(`SELECT action, details_json AS details, created_at AS createdAt FROM audit_logs
+      WHERE target_type = 'user' AND target_id = ? ORDER BY created_at DESC LIMIT 100`).all(user.id),
+  ]);
+  return response.json({ user, activity: { deposits, withdrawals, ledger, trades, support, audit: activity } });
+});
+
+router.post('/transactions/bulk-review', async (request, response) => {
+  const items = request.body?.items;
+  const status = request.body?.status;
+  if (!Array.isArray(items) || items.length < 1 || items.length > 100
+      || !['approved', 'rejected'].includes(status)
+      || items.some((item) => !item || !['deposits', 'withdrawals'].includes(item.type)
+        || typeof item.id !== 'string' || item.id.length > 100)
+      || new Set(items.map((item) => `${item.type}:${item.id}`)).size !== items.length) {
+    return response.status(400).json({ error: 'Select between 1 and 100 unique pending transactions to review.' });
+  }
+
+  await db.transaction(async () => {
+    for (const item of items) {
+      const record = await db.prepare(`SELECT id FROM ${item.type} WHERE id = ? AND status = 'pending'`).get(item.id);
+      if (!record) {
+        const error = new Error('Every selected transaction must still be pending.');
+        error.status = 409;
+        throw error;
+      }
+    }
+    for (const item of items) {
+      const result = await db.prepare(`
+        UPDATE ${item.type} SET status = ?, reviewed_by_admin_id = ?, reviewed_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'pending'
+      `).run(status, request.admin.id, item.id);
+      if (result.changes !== 1) {
+        const error = new Error('A selected transaction changed during review. Refresh and try again.');
+        error.status = 409;
+        throw error;
+      }
+    }
+    await audit({
+      adminId: request.admin.id,
+      action: 'transactions.bulk_reviewed',
+      targetType: 'transactions',
+      details: { status, items },
+      request,
+    });
+  })();
+  return response.json({ reviewed: items.length, status, walletBalancesChanged: false });
 });
 
 router.get('/rounds/:roundId/participants', async (request, response) => {

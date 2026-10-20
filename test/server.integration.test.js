@@ -303,6 +303,18 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(employeeLogoUpdate.status, 403);
   const employeeDirectory = await fetch(`${origin}/api/admin/employees`, { headers: { Cookie: employeeCookie } });
   assert.equal(employeeDirectory.status, 403);
+  const employeeMemberCreation = await fetch(`${origin}/api/admin/members`, {
+    method: 'POST',
+    headers: { Cookie: employeeCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Unauthorized Member', email: 'unauthorized@example.com' }),
+  });
+  assert.equal(employeeMemberCreation.status, 403);
+  const employeeTransactionReview = await fetch(`${origin}/api/admin/transactions/bulk-review`, {
+    method: 'POST',
+    headers: { Cookie: employeeCookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'approved', items: [{ type: 'deposits', id: 'bulk-deposit-1' }] }),
+  });
+  assert.equal(employeeTransactionReview.status, 403);
   const employeeRiskSettings = await fetch(`${origin}/api/admin/risk-settings`, {
     method: 'PUT',
     headers: { Cookie: employeeCookie, Origin: origin, 'Content-Type': 'application/json' },
@@ -512,6 +524,112 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(secondMemberData.user.email, 'second-member@example.com');
   assert.deepEqual(secondMemberData.support, []);
 
+  const createAdminMember = await fetch(`${origin}/api/admin/members`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Admin Created Member', email: 'admin-created@example.com' }),
+  });
+  assert.equal(createAdminMember.status, 201);
+  const adminMember = (await createAdminMember.json()).member;
+  assert.match(adminMember.accountId, /^GSQ-[A-Z0-9]{6}$/);
+  const adminMemberVerifyToken = tokenFromEmail(sentEmails.at(-1), 'verify');
+  const adminMemberVerify = await fetch(`${origin}/api/user/verify-email`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Forwarded-For': '198.51.100.10' },
+    body: JSON.stringify({ token: adminMemberVerifyToken }),
+  });
+  assert.equal(adminMemberVerify.status, 200);
+
+  const adminMemberLookup = await fetch(
+    `${origin}/api/admin/users/lookup?q=${encodeURIComponent(adminMember.accountId)}`,
+    { headers: { Cookie: cookie } },
+  );
+  assert.equal(adminMemberLookup.status, 200);
+  const adminMemberRecord = (await adminMemberLookup.json()).user;
+  assert.equal(adminMemberRecord.email, 'admin-created@example.com');
+  const missingMemberLookup = await fetch(
+    `${origin}/api/admin/users/lookup?q=${encodeURIComponent('missing-member@example.com')}`,
+    { headers: { Cookie: cookie } },
+  );
+  assert.equal((await missingMemberLookup.json()).user, null);
+
+  const setAdminMemberPassword = await fetch(`${origin}/api/admin/users/${adminMember.id}/password`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: 'admin-created-member-password-938!' }),
+  });
+  assert.equal(setAdminMemberPassword.status, 200);
+  const adminMemberLogin = await fetch(`${origin}/api/user/login`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Forwarded-For': '198.51.100.13' },
+    body: JSON.stringify({ email: 'admin-created@example.com', password: 'admin-created-member-password-938!' }),
+  });
+  assert.equal(adminMemberLogin.status, 200);
+  const adminMemberCookie = adminMemberLogin.headers.getSetCookie()[0].split(';')[0];
+  const memberDetailsResponse = await fetch(`${origin}/api/admin/users/${adminMember.id}`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(memberDetailsResponse.status, 200);
+  assert.equal((await memberDetailsResponse.json()).user.id, adminMember.id);
+
+  const editAdminMember = await fetch(`${origin}/api/admin/users/${adminMember.id}`, {
+    method: 'PATCH',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Updated Admin Member',
+      email: 'admin-created@example.com',
+      status: 'active',
+    }),
+  });
+  assert.equal(editAdminMember.status, 200);
+  const deactivateAdminMember = await fetch(`${origin}/api/admin/users/${adminMember.id}`, {
+    method: 'DELETE',
+    headers: { Cookie: cookie, Origin: origin },
+  });
+  assert.equal(deactivateAdminMember.status, 200);
+  const deactivatedMemberSession = await fetch(`${origin}/api/user/me`, { headers: { Cookie: adminMemberCookie } });
+  assert.equal(deactivatedMemberSession.status, 401);
+  const deactivatedLookup = await fetch(
+    `${origin}/api/admin/users/lookup?q=${encodeURIComponent('admin-created@example.com')}`,
+    { headers: { Cookie: cookie } },
+  );
+  assert.equal((await deactivatedLookup.json()).user.status, 'suspended');
+  const seededTransactions = spawnSync(process.execPath, ['-e', `
+    const Database = require('better-sqlite3');
+    const db = new Database(process.env.GSQUAD_DB_PATH);
+    db.prepare("INSERT INTO deposits (id, user_id, amount_minor, currency, idempotency_key) VALUES ('bulk-deposit-1', ?, 5000, 'USD', 'bulk-deposit-key-1')").run(process.env.TEST_MEMBER_ID);
+    db.prepare("INSERT INTO withdrawals (id, user_id, amount_minor, currency, idempotency_key) VALUES ('bulk-withdrawal-1', ?, 2000, 'USD', 'bulk-withdrawal-key-1')").run(process.env.TEST_MEMBER_ID);
+    db.close();
+  `], { cwd: root, env: { ...env, TEST_MEMBER_ID: loginResult.user.id }, encoding: 'utf8' });
+  assert.equal(seededTransactions.status, 0, seededTransactions.stderr);
+  const bulkReview = await fetch(`${origin}/api/admin/transactions/bulk-review`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      status: 'approved',
+      items: [
+        { type: 'deposits', id: 'bulk-deposit-1' },
+        { type: 'withdrawals', id: 'bulk-withdrawal-1' },
+      ],
+    }),
+  });
+  assert.equal(bulkReview.status, 200);
+  assert.deepEqual(await bulkReview.json(), { reviewed: 2, status: 'approved', walletBalancesChanged: false });
+  const replayBulkReview = await fetch(`${origin}/api/admin/transactions/bulk-review`, {
+    method: 'POST',
+    headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      status: 'approved',
+      items: [{ type: 'deposits', id: 'bulk-deposit-1' }],
+    }),
+  });
+  assert.equal(replayBulkReview.status, 409);
+  const reviewedDeposit = (await (await fetch(`${origin}/api/admin/deposits`, { headers: { Cookie: cookie } })).json())
+    .records.find((record) => record.id === 'bulk-deposit-1');
+  assert.equal(reviewedDeposit.status, 'approved');
+  const walletAfterReview = await fetch(`${origin}/api/user/dashboard`, { headers: { Cookie: userCookie } });
+  assert.equal((await walletAfterReview.json()).user.walletBalanceMinor, 0);
+
   const userLogin = await fetch(`${origin}/api/user/login`, {
     method: 'POST',
     headers: { Origin: origin, 'Content-Type': 'application/json' },
@@ -556,7 +674,7 @@ test('admin login, employee access, configuration, protected APIs, and logout wo
   assert.equal(afterPasswordReset.status, 401);
   const afterResetLogin = await fetch(`${origin}/api/user/login`, {
     method: 'POST',
-    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Forwarded-For': '198.51.100.12' },
     body: JSON.stringify({ email: 'portal-member@example.com', password: 'portal-member-reset-password-746!' }),
   });
   assert.equal(afterResetLogin.status, 200);

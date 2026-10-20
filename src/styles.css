@@ -61,6 +61,8 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
 .button-primary:hover { background: var(--blue-dark); }
 .button-subtle { border-color: #e6eaf1; background: white; color: #5e6b7e; }
 .button-subtle:hover { border-color: #cbd4e2; background: #fafbfd; }
+.button-danger { border-color: #f0d7d7; background: #fff7f7; color: #b14e4a; }
+.button-danger:hover { border-color: #e9bcbc; background: #fff0f0; }
 .button-disabled { background: #e9edf3; color: #8b95a3; }
 .logout-button { min-height: 30px; }
 .main-content { width: min(100%, 1500px); min-height: calc(100vh - 64px); margin: 0 auto; padding: 28px clamp(20px, 3vw, 40px) 20px; }
@@ -233,6 +235,27 @@ h2 { margin-bottom: 5px; color: #29364a; font: 700 13px Manrope, "DM Sans", sans
 .form-checkbox { display: flex; align-items: center; align-self: end; min-height: 39px; }
 .form-checkbox input { width: 16px; height: 16px; accent-color: var(--blue); }
 .form-actions { display: flex; justify-content: flex-end; }
+.member-lookup-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-top: 14px; }
+.member-detail { display: grid; gap: 17px; }
+.member-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 20px; padding: 13px; border: 1px solid #eef1f5; border-radius: 7px; background: #fafbfd; }
+.member-summary .status-line { padding: 0; border: 0; }
+.member-edit-note { margin: 0; color: #7c8798; font-size: 9px; line-height: 1.5; }
+.member-password-form { padding-top: 15px; border-top: 1px solid #eef1f5; }
+.member-activity-heading { padding-top: 15px; border-top: 1px solid #eef1f5; }
+.member-activity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.member-activity-category { min-width: 0; overflow: hidden; padding: 12px; border: 1px solid #eef1f5; border-radius: 7px; }
+.member-activity-category h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; color: #354258; font-size: 10px; }
+.member-activity-category h3 span { display: inline-grid; min-width: 19px; height: 19px; place-items: center; border-radius: 10px; background: #f0f3f8; color: #6e7a8d; font-size: 8px; }
+.member-activity-category > p { margin: 8px 0 0; font-size: 9px; }
+.member-activity-category .data-table th, .member-activity-category .data-table td { padding-right: 7px; padding-left: 7px; font-size: 8px; }
+.member-activity-category .data-table th { white-space: normal; }
+.member-deactivate { padding-top: 13px; border-top: 1px solid #eef1f5; }
+.bulk-review-bar { display: flex; align-items: center; gap: 13px; padding: 10px 15px; border-top: 1px solid #eef1f5; border-bottom: 1px solid #eef1f5; color: #778397; font-size: 9px; }
+.bulk-select { display: inline-flex; align-items: center; gap: 6px; color: #526075; font-weight: 650; }
+.bulk-review-actions { display: flex; gap: 7px; margin-left: auto; }
+.bulk-review-actions .button { min-height: 29px; }
+.bulk-review-message { margin: 0; padding: 9px 14px; color: #278861; font-size: 9px; }
+.bulk-review-message[role="status"] { color: #526075; }
 .form-feedback { margin: 0; color: #278861; font-size: 10px; }
 .config-form .inline-error { margin: 0; }
 .login-form input:focus { border-color: #8ca6f2; outline: 0; box-shadow: 0 0 0 3px rgba(56, 103, 232, .1); }
@@ -291,6 +314,12 @@ h2 { margin-bottom: 5px; color: #29364a; font: 700 13px Manrope, "DM Sans", sans
   .table-heading { align-items: flex-start; flex-direction: column; }
   .engine-actions { justify-content: flex-start; }
   .search-box { width: 100%; }
+  .member-lookup-form { grid-template-columns: minmax(0, 1fr); }
+  .member-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .member-activity-grid { grid-template-columns: minmax(0, 1fr); }
+  .bulk-review-bar { align-items: flex-start; flex-direction: column; }
+  .bulk-review-actions { width: 100%; margin-left: 0; }
+  .bulk-review-actions .button { flex: 1; }
   .data-table thead { display: none; }
   .data-table, .data-table tbody, .data-table tr, .data-table td { display: block; width: 100%; }
   .data-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; padding: 12px 13px; border-top: 1px solid #eef1f5; }
