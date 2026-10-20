@@ -1,0 +1,22 @@
+{
+  "buildCommand": "npm run build",
+  "functions": {
+    "index.js": {
+      "includeFiles": "server/db.js"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/site/index.html"
+    },
+    {
+      "source": "/admin",
+      "destination": "/site/index.html"
+    },
+    {
+      "source": "/admin/:path*",
+      "destination": "/site/index.html"
+    }
+  ]
+}

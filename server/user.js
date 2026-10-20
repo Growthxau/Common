@@ -1,6 +1,6 @@
 const { randomBytes, randomUUID } = require('node:crypto');
 const express = require('express');
-const db = require('./db');
+const db = require('./database');
 const { audit, hashPassword, hashToken, verifyPassword } = require('./auth');
 const { sendAccountLink, smtpConfiguration } = require('./mailer');
 
@@ -39,22 +39,22 @@ function clearSessionCookie(response) {
   response.clearCookie(SESSION_COOKIE, options);
 }
 
-function setSession(response, userId) {
+async function setSession(response, userId) {
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
-  db.prepare('DELETE FROM user_sessions WHERE expires_at <= ?').run(new Date().toISOString());
-  db.prepare('INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+  await db.prepare('DELETE FROM user_sessions WHERE expires_at <= ?').run(new Date().toISOString());
+  await db.prepare('INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
     .run(hashToken(token), userId, expiresAt);
   response.cookie(SESSION_COOKIE, token, cookieOptions());
 }
 
-function requireUser(request, response, next) {
+async function requireUser(request, response, next) {
   const token = request.cookies?.[SESSION_COOKIE];
   if (!token || token.length > 100) {
     return response.status(401).json({ error: 'Authentication required.' });
   }
 
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT users.id, users.account_id, users.display_name, users.email, users.status,
       users.currency, users.bot_enabled, users.configured_stake_minor, users.email_verified,
       users.max_daily_loss_minor, users.daily_profit_target_minor
@@ -64,7 +64,7 @@ function requireUser(request, response, next) {
   `).get(hashToken(token), new Date().toISOString());
 
   if (!user || user.status !== 'active' || !user.email_verified) {
-    db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(hashToken(token));
+    await db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(hashToken(token));
     clearSessionCookie(response);
     return response.status(user ? 403 : 401).json({
       error: !user
@@ -75,17 +75,17 @@ function requireUser(request, response, next) {
     });
   }
 
-  db.prepare('UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
+  await db.prepare('UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
   request.user = user;
   request.userSessionHash = hashToken(token);
   return next();
 }
 
-function issueToken(userId, action) {
+async function issueToken(userId, action) {
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-  db.prepare('DELETE FROM user_action_tokens WHERE expires_at <= ?').run(new Date().toISOString());
-  db.prepare(`
+  await db.prepare('DELETE FROM user_action_tokens WHERE expires_at <= ?').run(new Date().toISOString());
+  await db.prepare(`
     INSERT INTO user_action_tokens (token_hash, user_id, action, expires_at)
     VALUES (?, ?, ?, ?)
   `).run(hashToken(token), userId, action, expiresAt);
@@ -123,18 +123,18 @@ async function register(request, response) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     accountId = createAccountId();
     try {
-      db.transaction(() => {
-        db.prepare(`
+      await db.transaction(async () => {
+        await db.prepare(`
           INSERT INTO users (id, account_id, display_name, email, password_hash, currency, email_verified)
           VALUES (?, ?, ?, ?, ?, ?, 0)
         `).run(id, accountId, name, email, passwordHash, currency);
-        db.prepare('INSERT INTO wallets (id, user_id, currency, balance_minor) VALUES (?, ?, ?, 0)')
+        await db.prepare('INSERT INTO wallets (id, user_id, currency, balance_minor) VALUES (?, ?, ?, 0)')
           .run(randomUUID(), id, currency);
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO user_action_tokens (token_hash, user_id, action, expires_at)
           VALUES (?, ?, 'verify_email', ?)
         `).run(hashToken(verificationToken), id, verificationExpiresAt);
-        audit({
+        await audit({
           action: 'user.registered',
           targetType: 'user',
           targetId: id,
@@ -144,8 +144,8 @@ async function register(request, response) {
       })();
       break;
     } catch (error) {
-      if (error.code !== 'SQLITE_CONSTRAINT_UNIQUE') throw error;
-      if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
+      if (error.code !== 'SQLITE_CONSTRAINT_UNIQUE' && error.code !== '23505') throw error;
+      if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
         return response.status(409).json({ error: 'An account with that email already exists.' });
       }
       if (attempt === 2) throw error;
@@ -174,7 +174,7 @@ async function login(request, response) {
     return response.status(400).json({ error: 'Invalid email or password.' });
   }
 
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT id, account_id, display_name, email, status, currency, bot_enabled,
       configured_stake_minor, password_hash, email_verified, max_daily_loss_minor,
       daily_profit_target_minor
@@ -182,7 +182,7 @@ async function login(request, response) {
   `).get(email);
   const passwordMatches = await verifyPassword(password, user?.password_hash);
   if (!user || !passwordMatches || user.status !== 'active') {
-    audit({
+    await audit({
       action: 'user.login_failed',
       targetType: 'user',
       details: { email: email.slice(0, 254) },
@@ -194,26 +194,26 @@ async function login(request, response) {
     return response.status(403).json({ error: 'Verify your email address before signing in.' });
   }
 
-  db.prepare('UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
-  setSession(response, user.id);
-  audit({ action: 'user.login_success', targetType: 'user', targetId: user.id, request });
+  await db.prepare('UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
+  await setSession(response, user.id);
+  await audit({ action: 'user.login_success', targetType: 'user', targetId: user.id, request });
   return response.json({ user: userPayload(user), tradingEnabled: false, paymentsEnabled: false });
 }
 
-function verifyEmail(request, response) {
+async function verifyEmail(request, response) {
   const token = typeof request.body?.token === 'string' ? request.body.token : '';
   if (token.length < 40 || token.length > 100) {
     return response.status(400).json({ error: 'The verification link is invalid or expired.' });
   }
-  const userId = db.transaction(() => {
-    const tokenRecord = db.prepare(`
+  const userId = await db.transaction(async () => {
+    const tokenRecord = await db.prepare(`
       SELECT user_id FROM user_action_tokens
       WHERE token_hash = ? AND action = 'verify_email' AND expires_at > ?
     `).get(hashToken(token), new Date().toISOString());
     if (!tokenRecord) return null;
-    db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(tokenRecord.user_id);
-    db.prepare("DELETE FROM user_action_tokens WHERE user_id = ? AND action = 'verify_email'").run(tokenRecord.user_id);
-    audit({ action: 'user.email_verified', targetType: 'user', targetId: tokenRecord.user_id, request });
+    await db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(tokenRecord.user_id);
+    await db.prepare("DELETE FROM user_action_tokens WHERE user_id = ? AND action = 'verify_email'").run(tokenRecord.user_id);
+    await audit({ action: 'user.email_verified', targetType: 'user', targetId: tokenRecord.user_id, request });
     return tokenRecord.user_id;
   })();
   if (!userId) return response.status(400).json({ error: 'The verification link is invalid or expired.' });
@@ -226,13 +226,13 @@ async function resendVerification(request, response) {
     return response.status(400).json({ error: 'Enter a valid email address.' });
   }
   if (!smtpConfiguration()) return response.status(503).json({ error: 'Email delivery is not configured.' });
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT id, display_name, email FROM users
     WHERE email = ? AND email_verified = 0 AND status = 'active'
   `).get(email);
   if (user) {
-    db.prepare("DELETE FROM user_action_tokens WHERE user_id = ? AND action = 'verify_email'").run(user.id);
-    const token = issueToken(user.id, 'verify_email');
+    await db.prepare("DELETE FROM user_action_tokens WHERE user_id = ? AND action = 'verify_email'").run(user.id);
+    const token = await issueToken(user.id, 'verify_email');
     await sendAccountLink({ request, email: user.email, name: user.display_name, token, type: 'verify_email' });
   }
   return response.json({ message: 'If the account needs verification, a link has been sent.' });
@@ -244,13 +244,13 @@ async function requestPasswordReset(request, response) {
     return response.status(400).json({ error: 'Enter a valid email address.' });
   }
   if (!smtpConfiguration()) return response.status(503).json({ error: 'Email delivery is not configured.' });
-  const user = db.prepare(`
+  const user = await db.prepare(`
     SELECT id, display_name, email FROM users
     WHERE email = ? AND email_verified = 1 AND status = 'active'
   `).get(email);
   if (user) {
-    db.prepare("DELETE FROM user_action_tokens WHERE user_id = ? AND action = 'password_reset'").run(user.id);
-    const token = issueToken(user.id, 'password_reset');
+    await db.prepare("DELETE FROM user_action_tokens WHERE user_id = ? AND action = 'password_reset'").run(user.id);
+    const token = await issueToken(user.id, 'password_reset');
     await sendAccountLink({ request, email: user.email, name: user.display_name, token, type: 'password_reset' });
   }
   return response.json({ message: 'If a verified account exists for this email, a reset link has been sent.' });
@@ -265,36 +265,36 @@ async function resetPassword(request, response) {
     return response.status(400).json({ error: 'Use the valid reset link and enter matching passwords of at least 14 characters.' });
   }
   const passwordHash = await hashPassword(password);
-  const userId = db.transaction(() => {
-    const tokenRecord = db.prepare(`
+  const userId = await db.transaction(async () => {
+    const tokenRecord = await db.prepare(`
       SELECT user_id FROM user_action_tokens
       WHERE token_hash = ? AND action = 'password_reset' AND expires_at > ?
     `).get(hashToken(token), new Date().toISOString());
     if (!tokenRecord) return null;
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, tokenRecord.user_id);
-    db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(tokenRecord.user_id);
-    db.prepare('DELETE FROM user_action_tokens WHERE user_id = ?').run(tokenRecord.user_id);
-    audit({ action: 'user.password_reset', targetType: 'user', targetId: tokenRecord.user_id, request });
+    await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, tokenRecord.user_id);
+    await db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(tokenRecord.user_id);
+    await db.prepare('DELETE FROM user_action_tokens WHERE user_id = ?').run(tokenRecord.user_id);
+    await audit({ action: 'user.password_reset', targetType: 'user', targetId: tokenRecord.user_id, request });
     return tokenRecord.user_id;
   })();
   if (!userId) return response.status(400).json({ error: 'The password reset link is invalid or expired.' });
   return response.json({ reset: true, message: 'Password updated. Sign in with your new password.' });
 }
 
-function logout(request, response) {
+async function logout(request, response) {
   const token = request.cookies?.[SESSION_COOKIE];
   if (token && token.length <= 100) {
-    db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(hashToken(token));
+    await db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(hashToken(token));
   }
   if (request.user) {
-    audit({ action: 'user.logout', targetType: 'user', targetId: request.user.id, request });
+    await audit({ action: 'user.logout', targetType: 'user', targetId: request.user.id, request });
   }
   clearSessionCookie(response);
   return response.status(204).end();
 }
 
-router.get('/dashboard', (request, response) => {
-  const user = db.prepare(`
+router.get('/dashboard', async (request, response) => {
+  const user = await db.prepare(`
     SELECT users.id, users.account_id, users.display_name, users.email, users.status,
       users.currency, users.bot_enabled, users.configured_stake_minor, users.created_at,
       users.email_verified, users.max_daily_loss_minor, users.daily_profit_target_minor,
@@ -306,7 +306,7 @@ router.get('/dashboard', (request, response) => {
   `).get(request.user.id);
   if (!user) return response.status(404).json({ error: 'Account wallet not found.' });
 
-  const ledgerRows = db.prepare(`
+  const ledgerRows = await db.prepare(`
     SELECT id, entry_type AS entryType, direction, amount_minor AS amountMinor,
       balance_after_minor AS balanceAfterMinor, currency, reference_type AS referenceType,
       created_at AS createdAt
@@ -319,34 +319,34 @@ router.get('/dashboard', (request, response) => {
   const ledgerNextCursor = ledgerHasMore
     ? Buffer.from(JSON.stringify({ createdAt: ledger.at(-1).createdAt, id: ledger.at(-1).id })).toString('base64url')
     : null;
-  const deposits = db.prepare(`
+  const deposits = await db.prepare(`
     SELECT id, amount_minor AS amountMinor, currency, status, created_at AS createdAt
     FROM deposits WHERE user_id = ? ORDER BY created_at DESC LIMIT 100
   `).all(user.id);
-  const withdrawals = db.prepare(`
+  const withdrawals = await db.prepare(`
     SELECT id, amount_minor AS amountMinor, currency, status, created_at AS createdAt
     FROM withdrawals WHERE user_id = ? ORDER BY created_at DESC LIMIT 100
   `).all(user.id);
-  const support = db.prepare(`
+  const support = await db.prepare(`
     SELECT id, subject, message, status, response, created_at AS createdAt,
       updated_at AS updatedAt
     FROM support_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 20
   `).all(user.id);
-  const walletTotals = db.prepare(`
+  const walletTotals = await db.prepare(`
     SELECT
       COALESCE(SUM(CASE WHEN entry_type = 'deposit' AND direction = 'credit' THEN amount_minor ELSE 0 END), 0) AS depositsMinor,
       COALESCE(SUM(CASE WHEN entry_type = 'withdrawal' AND direction = 'debit' THEN amount_minor ELSE 0 END), 0) AS withdrawalsMinor
     FROM wallet_ledger WHERE user_id = ?
   `).get(user.id);
-  const realizedProfitLossMinor = db.prepare(`
+  const realizedProfitLossMinor = (await db.prepare(`
     SELECT COALESCE(SUM(round_participants.allocated_result_minor), 0) AS total
     FROM round_participants
     JOIN trading_rounds ON trading_rounds.id = round_participants.round_id
     JOIN trades ON trades.round_id = trading_rounds.id
     WHERE round_participants.user_id = ? AND trades.mode = 'live'
       AND trades.status = 'confirmed' AND trades.confirmed_by_deriv = 1
-  `).get(user.id).total;
-  const dailyProfitLossMinor = db.prepare(`
+  `).get(user.id)).total;
+  const dailyProfitLossMinor = (await db.prepare(`
     SELECT COALESCE(SUM(round_participants.allocated_result_minor), 0) AS total
     FROM round_participants
     JOIN trading_rounds ON trading_rounds.id = round_participants.round_id
@@ -354,20 +354,21 @@ router.get('/dashboard', (request, response) => {
     WHERE round_participants.user_id = ? AND trades.mode = 'live'
       AND trades.status = 'confirmed' AND trades.confirmed_by_deriv = 1
       AND trading_rounds.settled_at >= date('now')
-  `).get(user.id).total;
+  `).get(user.id)).total;
   const notificationPreferences = JSON.parse(user.notification_preferences_json);
-  const notifications = db.prepare(`
+  const notifications = await db.prepare(`
     SELECT id, category, title, message, read_at AS readAt, created_at AS createdAt
     FROM user_notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50
-  `).all(user.id).filter((notification) => notificationPreferences[notification.category] !== false);
-  const openCommittedMinor = db.prepare(`
+  `).all(user.id);
+  const visibleNotifications = notifications.filter((notification) => notificationPreferences[notification.category] !== false);
+  const openCommittedMinor = (await db.prepare(`
     SELECT COALESCE(SUM(round_participants.stake_minor), 0) AS total
     FROM round_participants
     JOIN trading_rounds ON trading_rounds.id = round_participants.round_id
     WHERE round_participants.user_id = ? AND trading_rounds.mode = 'live'
       AND trading_rounds.status IN ('frozen', 'approved', 'executing', 'settling')
-  `).get(user.id).total;
-  const tradingActivity = db.prepare(`
+  `).get(user.id)).total;
+  const tradingActivity = await db.prepare(`
     SELECT trading_rounds.id AS roundId, round_participants.stake_minor AS contributedStakeMinor,
       round_participants.allocated_result_minor AS allocatedProfitLossMinor,
       trading_rounds.status AS roundStatus, trading_rounds.settled_at AS settledAt,
@@ -400,7 +401,7 @@ router.get('/dashboard', (request, response) => {
     deposits,
     withdrawals,
     support,
-    notifications,
+    notifications: visibleNotifications,
     tradingActivity,
     walletTotals,
     committedStakeMinor: openCommittedMinor,
@@ -415,7 +416,7 @@ router.get('/dashboard', (request, response) => {
   });
 });
 
-router.get('/ledger', (request, response) => {
+router.get('/ledger', async (request, response) => {
   const cursor = typeof request.query.cursor === 'string' ? request.query.cursor : '';
   let boundary = null;
   if (cursor) {
@@ -429,7 +430,7 @@ router.get('/ledger', (request, response) => {
       return response.status(400).json({ error: 'The ledger cursor is invalid.' });
     }
   }
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT id, entry_type AS entryType, direction, amount_minor AS amountMinor,
       balance_after_minor AS balanceAfterMinor, currency, reference_type AS referenceType,
       created_at AS createdAt
@@ -447,7 +448,7 @@ router.get('/ledger', (request, response) => {
   return response.json({ records: rows, nextCursor });
 });
 
-router.put('/risk-settings', (request, response) => {
+router.put('/risk-settings', async (request, response) => {
   const { configuredStakeMinor, maxDailyLossMinor, dailyProfitTargetMinor } = request.body || {};
   const optionalLimits = [maxDailyLossMinor, dailyProfitTargetMinor];
   if (!Number.isSafeInteger(configuredStakeMinor) || configuredStakeMinor < 0
@@ -455,19 +456,19 @@ router.put('/risk-settings', (request, response) => {
         && (!Number.isSafeInteger(value) || value <= 0))) {
     return response.status(400).json({ error: 'Enter a non-negative stake and positive daily limits, or leave a limit empty.' });
   }
-  const wallet = db.prepare('SELECT balance_minor FROM wallets WHERE user_id = ?').get(request.user.id);
+  const wallet = await db.prepare('SELECT balance_minor FROM wallets WHERE user_id = ?').get(request.user.id);
   if (!wallet) return response.status(404).json({ error: 'Account wallet not found.' });
   if (configuredStakeMinor > wallet.balance_minor) {
     return response.status(400).json({ error: 'The configured stake cannot exceed your available wallet balance.' });
   }
 
-  db.transaction(() => {
-    db.prepare(`
+  await db.transaction(async () => {
+    await db.prepare(`
       UPDATE users
       SET configured_stake_minor = ?, max_daily_loss_minor = ?, daily_profit_target_minor = ?
       WHERE id = ?
     `).run(configuredStakeMinor, maxDailyLossMinor, dailyProfitTargetMinor, request.user.id);
-    audit({
+    await audit({
       action: 'user.risk_settings_updated',
       targetType: 'user',
       targetId: request.user.id,
@@ -483,10 +484,10 @@ router.put('/risk-settings', (request, response) => {
   });
 });
 
-router.post('/bot/start', (request, response) => {
-  db.transaction(() => {
-    db.prepare('UPDATE users SET bot_enabled = 1 WHERE id = ?').run(request.user.id);
-    audit({
+router.post('/bot/start', async (request, response) => {
+  await db.transaction(async () => {
+    await db.prepare('UPDATE users SET bot_enabled = 1 WHERE id = ?').run(request.user.id);
+    await audit({
       action: 'user.bot_opted_in',
       targetType: 'user',
       targetId: request.user.id,
@@ -501,16 +502,16 @@ router.post('/bot/start', (request, response) => {
   });
 });
 
-router.post('/bot/stop', (request, response) => {
-  db.transaction(() => {
-    db.prepare('UPDATE users SET bot_enabled = 0 WHERE id = ?').run(request.user.id);
-    audit({ action: 'user.bot_opted_out', targetType: 'user', targetId: request.user.id, request });
+router.post('/bot/stop', async (request, response) => {
+  await db.transaction(async () => {
+    await db.prepare('UPDATE users SET bot_enabled = 0 WHERE id = ?').run(request.user.id);
+    await audit({ action: 'user.bot_opted_out', targetType: 'user', targetId: request.user.id, request });
   })();
   return response.json({ botEnabled: false, tradingEnabled: false, message: 'Your participation preference is off.' });
 });
 
-router.get('/activity', (request, response) => {
-  const records = db.prepare(`
+router.get('/activity', async (request, response) => {
+  const records = await db.prepare(`
     SELECT trading_rounds.id AS roundId, round_participants.stake_minor AS contributedStakeMinor,
       round_participants.allocated_result_minor AS allocatedProfitLossMinor,
       trading_rounds.status AS roundStatus, trading_rounds.settled_at AS settledAt,
@@ -532,7 +533,7 @@ router.get('/activity', (request, response) => {
   return response.json({ records });
 });
 
-router.put('/profile', (request, response) => {
+router.put('/profile', async (request, response) => {
   const name = typeof request.body?.name === 'string' ? request.body.name.trim() : '';
   const preferences = request.body?.notificationPreferences;
   const preferenceKeys = ['account', 'wallet', 'security'];
@@ -542,11 +543,11 @@ router.put('/profile', (request, response) => {
       || Object.keys(preferences).some((key) => !preferenceKeys.includes(key))) {
     return response.status(400).json({ error: 'Enter a valid name and notification preferences.' });
   }
-  db.transaction(() => {
-    db.prepare(`
+  await db.transaction(async () => {
+    await db.prepare(`
       UPDATE users SET display_name = ?, notification_preferences_json = ? WHERE id = ?
     `).run(name, JSON.stringify(preferences), request.user.id);
-    audit({
+    await audit({
       action: 'user.profile_updated',
       targetType: 'user',
       targetId: request.user.id,
@@ -564,34 +565,34 @@ router.post('/password/change', async (request, response) => {
   if (newPassword.length < 14 || newPassword.length > 1024 || newPassword !== confirmPassword) {
     return response.status(400).json({ error: 'Enter matching new passwords of at least 14 characters.' });
   }
-  const stored = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(request.user.id);
+  const stored = await db.prepare('SELECT password_hash FROM users WHERE id = ?').get(request.user.id);
   if (!await verifyPassword(currentPassword, stored?.password_hash)) {
     return response.status(401).json({ error: 'Current password is incorrect.' });
   }
   const passwordHash = await hashPassword(newPassword);
-  db.transaction(() => {
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, request.user.id);
-    db.prepare('DELETE FROM user_sessions WHERE user_id = ? AND token_hash != ?')
+  await db.transaction(async () => {
+    await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, request.user.id);
+    await db.prepare('DELETE FROM user_sessions WHERE user_id = ? AND token_hash != ?')
       .run(request.user.id, request.userSessionHash);
-    audit({ action: 'user.password_changed', targetType: 'user', targetId: request.user.id, request });
+    await audit({ action: 'user.password_changed', targetType: 'user', targetId: request.user.id, request });
   })();
   return response.json({ changed: true });
 });
 
-router.patch('/notifications/:notificationId/read', (request, response) => {
-  const result = db.prepare(`
+router.patch('/notifications/:notificationId/read', async (request, response) => {
+  const result = await db.prepare(`
     UPDATE user_notifications SET read_at = CURRENT_TIMESTAMP
     WHERE id = ? AND user_id = ? AND read_at IS NULL
   `).run(request.params.notificationId, request.user.id);
   if (!result.changes) {
-    const exists = db.prepare('SELECT 1 FROM user_notifications WHERE id = ? AND user_id = ?')
+    const exists = await db.prepare('SELECT 1 FROM user_notifications WHERE id = ? AND user_id = ?')
       .get(request.params.notificationId, request.user.id);
     if (!exists) return response.status(404).json({ error: 'Notification not found.' });
   }
   return response.json({ read: true });
 });
 
-router.post('/support', (request, response) => {
+router.post('/support', async (request, response) => {
   const subject = typeof request.body?.subject === 'string' ? request.body.subject.trim() : '';
   const message = typeof request.body?.message === 'string' ? request.body.message.trim() : '';
   if (subject.length < 3 || subject.length > 120 || message.length < 10 || message.length > 2000) {
@@ -601,18 +602,18 @@ router.post('/support', (request, response) => {
   }
 
   const id = randomUUID();
-  db.transaction(() => {
-    db.prepare(`
+  await db.transaction(async () => {
+    await db.prepare(`
       INSERT INTO support_requests (id, user_id, subject, message) VALUES (?, ?, ?, ?)
     `).run(id, request.user.id, subject, message);
-    audit({
+    await audit({
       action: 'user.support_request_created',
       targetType: 'support_request',
       targetId: id,
       request,
     });
   })();
-  const supportRequest = db.prepare(`
+  const supportRequest = await db.prepare(`
     SELECT id, subject, message, status, response, created_at AS createdAt
     FROM support_requests WHERE id = ? AND user_id = ?
   `).get(id, request.user.id);

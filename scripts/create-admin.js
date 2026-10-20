@@ -1,5 +1,5 @@
 const { randomUUID } = require('node:crypto');
-const db = require('../server/db');
+const db = require('../server/database');
 const { hashPassword } = require('../server/auth');
 
 async function createAdmin() {
@@ -15,7 +15,8 @@ async function createAdmin() {
 
   const passwordHash = await hashPassword(password);
   const adminId = randomUUID();
-  db.prepare(`
+  await db.ready;
+  await db.prepare(`
     INSERT INTO admin_users (id, username, password_hash, role)
     VALUES (?, ?, ?, 'super_admin')
   `).run(adminId, username, passwordHash);
@@ -27,4 +28,6 @@ createAdmin()
     console.error('Could not create admin:', error.message);
     process.exitCode = 1;
   })
-  .finally(() => db.close());
+  .finally(async () => {
+    await db.close();
+  });

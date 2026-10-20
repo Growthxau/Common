@@ -1,6 +1,6 @@
 const express = require('express');
 const { randomUUID } = require('node:crypto');
-const db = require('./db');
+const db = require('./database');
 const { audit, hashPassword } = require('./auth');
 const { encryptSecret } = require('./secrets');
 
@@ -26,28 +26,28 @@ router.use((request, response, next) => {
   return next();
 });
 
-function count(sql) {
-  return db.prepare(sql).get().count;
+async function count(sql) {
+  return Number((await db.prepare(sql).get()).count);
 }
 
-function balancesByCurrency(sql) {
-  return db.prepare(sql).all().map((row) => ({
+async function balancesByCurrency(sql) {
+  return (await db.prepare(sql).all()).map((row) => ({
     currency: row.currency,
-    amountMinor: row.total,
+    amountMinor: Number(row.total),
   }));
 }
 
-function readSettings() {
+async function readSettings() {
   const settings = { ...defaultSettings };
-  for (const row of db.prepare('SELECT key, value_json FROM app_settings').all()) {
+  for (const row of await db.prepare('SELECT key, value_json FROM app_settings').all()) {
     if (configurableSettings.has(row.key)) settings[row.key] = JSON.parse(row.value_json);
   }
   return settings;
 }
 
-function readDerivCredentialStatus() {
-  const appId = db.prepare("SELECT value_json FROM app_settings WHERE key = 'derivAppId'").get();
-  const pat = db.prepare("SELECT value_json FROM app_settings WHERE key = 'derivPatEncrypted'").get();
+async function readDerivCredentialStatus() {
+  const appId = await db.prepare("SELECT value_json FROM app_settings WHERE key = 'derivAppId'").get();
+  const pat = await db.prepare("SELECT value_json FROM app_settings WHERE key = 'derivPatEncrypted'").get();
   const derivAppId = appId ? JSON.parse(appId.value_json) : (process.env.DERIV_APP_ID || '');
   const derivPatConfigured = Boolean(pat || process.env.DERIV_PAT);
   return {
@@ -92,55 +92,55 @@ function validSettings(value) {
   return true;
 }
 
-router.get('/overview', (request, response) => {
+router.get('/overview', async (request, response) => {
   const metrics = {
-    totalUsers: count('SELECT COUNT(*) AS count FROM users WHERE is_demo = 0'),
-    activeBots: count("SELECT COUNT(*) AS count FROM users WHERE is_demo = 0 AND status = 'active' AND bot_enabled = 1"),
+    totalUsers: await count('SELECT COUNT(*) AS count FROM users WHERE is_demo = 0'),
+    activeBots: await count("SELECT COUNT(*) AS count FROM users WHERE is_demo = 0 AND status = 'active' AND bot_enabled = 1"),
     adminDerivBalanceMinor: null,
-    walletLiabilitiesByCurrency: balancesByCurrency(`
+    walletLiabilitiesByCurrency: await balancesByCurrency(`
       SELECT wallets.currency, SUM(wallets.balance_minor) AS total
       FROM wallets
       JOIN users ON users.id = wallets.user_id
       WHERE users.is_demo = 0
       GROUP BY wallets.currency ORDER BY wallets.currency
     `),
-    dailyProfitLossByCurrency: balancesByCurrency(`
+    dailyProfitLossByCurrency: await balancesByCurrency(`
       SELECT currency, SUM(profit_loss_minor) AS total
       FROM trades
       WHERE mode = 'live' AND status = 'confirmed' AND confirmed_by_deriv = 1
         AND executed_at >= date('now')
       GROUP BY currency ORDER BY currency
     `),
-    verifiedTradesToday: count(`
+    verifiedTradesToday: await count(`
       SELECT COUNT(*) AS count FROM trades
       WHERE mode = 'live' AND status = 'confirmed' AND confirmed_by_deriv = 1
         AND executed_at >= date('now')
     `),
-    combinedStakeByCurrency: balancesByCurrency(`
+    combinedStakeByCurrency: await balancesByCurrency(`
       SELECT currency, SUM(combined_stake_minor) AS total
       FROM trading_rounds
       WHERE mode = 'live' AND status IN ('frozen', 'approved', 'executing', 'settling')
       GROUP BY currency ORDER BY currency
     `),
-    pendingDeposits: count(`
+    pendingDeposits: await count(`
       SELECT COUNT(*) AS count FROM deposits
       JOIN users ON users.id = deposits.user_id
       WHERE deposits.status = 'pending' AND users.is_demo = 0
     `),
-    pendingWithdrawals: count(`
+    pendingWithdrawals: await count(`
       SELECT COUNT(*) AS count FROM withdrawals
       JOIN users ON users.id = withdrawals.user_id
       WHERE withdrawals.status = 'pending' AND users.is_demo = 0
     `),
-    derivConfigured: Boolean(readDerivCredentialStatus().derivConfigured),
+    derivConfigured: Boolean((await readDerivCredentialStatus()).derivConfigured),
     derivConnected: false,
     tradingEnabled: false,
   };
   return response.json({ metrics });
 });
 
-router.get('/settings', (request, response) => {
-  const riskSettings = db.prepare(`
+router.get('/settings', async (request, response) => {
+  const riskSettings = await db.prepare(`
     SELECT max_daily_loss_minor AS maxDailyLossMinor,
       daily_profit_target_minor AS dailyProfitTargetMinor,
       max_combined_stake_minor AS maxCombinedStakeMinor,
@@ -155,15 +155,15 @@ router.get('/settings', (request, response) => {
     emergencyStopEnabled: 1,
   };
   return response.json({
-    settings: readSettings(),
+    settings: await readSettings(),
     riskSettings,
     tradingEnabled: false,
-    ...readDerivCredentialStatus(),
+    ...await readDerivCredentialStatus(),
     derivConnected: false,
   });
 });
 
-router.put('/settings', (request, response) => {
+router.put('/settings', async (request, response) => {
   const settings = request.body?.settings;
   if (!validSettings(settings)) {
     return response.status(400).json({ error: 'Application settings are invalid.' });
@@ -182,13 +182,13 @@ router.put('/settings', (request, response) => {
     supportEmail: settings.supportEmail.trim(),
     defaultCurrency: settings.defaultCurrency.toUpperCase(),
     timezone: settings.timezone.trim(),
-    appLogo: settings.appLogo === undefined ? readSettings().appLogo : settings.appLogo,
+    appLogo: settings.appLogo === undefined ? (await readSettings()).appLogo : settings.appLogo,
   };
-  const saveSettings = db.transaction(() => {
+  const saveSettings = db.transaction(async () => {
     for (const key of configurableSettings) {
-      saveSetting.run(key, JSON.stringify(normalizedSettings[key]), request.admin.id);
+      await saveSetting.run(key, JSON.stringify(normalizedSettings[key]), request.admin.id);
     }
-    audit({
+    await audit({
       adminId: request.admin.id,
       action: 'settings.updated',
       targetType: 'application_settings',
@@ -196,11 +196,11 @@ router.put('/settings', (request, response) => {
       request,
     });
   });
-  saveSettings();
-  return response.json({ settings: readSettings() });
+  await saveSettings();
+  return response.json({ settings: await readSettings() });
 });
 
-router.put('/deriv-credentials', (request, response) => {
+router.put('/deriv-credentials', async (request, response) => {
   const credentials = request.body?.derivCredentials;
   if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)
       || typeof credentials.appId !== 'string' || !/^\d{1,20}$/.test(credentials.appId.trim())
@@ -228,10 +228,10 @@ router.put('/deriv-credentials', (request, response) => {
       updated_at = CURRENT_TIMESTAMP
   `);
   try {
-    db.transaction(() => {
-      saveCredential.run('derivAppId', JSON.stringify(credentials.appId.trim()), request.admin.id);
-      if (encryptedPat) saveCredential.run('derivPatEncrypted', JSON.stringify(encryptedPat), request.admin.id);
-      audit({
+    await db.transaction(async () => {
+      await saveCredential.run('derivAppId', JSON.stringify(credentials.appId.trim()), request.admin.id);
+      if (encryptedPat) await saveCredential.run('derivPatEncrypted', JSON.stringify(encryptedPat), request.admin.id);
+      await audit({
         adminId: request.admin.id,
         action: 'deriv_credentials.updated',
         targetType: 'integration_credentials',
@@ -243,14 +243,14 @@ router.put('/deriv-credentials', (request, response) => {
     return response.status(500).json({ error: 'Deriv credentials could not be saved.' });
   }
 
-  const status = readDerivCredentialStatus();
+  const status = await readDerivCredentialStatus();
   if (!status.derivAppIdConfigured || (encryptedPat && !status.derivPatConfigured)) {
     return response.status(500).json({ error: 'Deriv credentials were not persisted.' });
   }
   return response.json({ ...status, derivConnected: false });
 });
 
-router.put('/risk-settings', (request, response) => {
+router.put('/risk-settings', async (request, response) => {
   const settings = request.body?.riskSettings;
   const numberFields = ['maxDailyLossMinor', 'dailyProfitTargetMinor', 'maxCombinedStakeMinor', 'maxExposureMinor'];
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)
@@ -273,8 +273,8 @@ router.put('/risk-settings', (request, response) => {
       updated_by_admin_id = excluded.updated_by_admin_id,
       updated_at = CURRENT_TIMESTAMP
   `);
-  db.transaction(() => {
-    saveRiskSettings.run(
+  await db.transaction(async () => {
+    await saveRiskSettings.run(
       settings.maxDailyLossMinor,
       settings.dailyProfitTargetMinor,
       settings.maxCombinedStakeMinor,
@@ -282,7 +282,7 @@ router.put('/risk-settings', (request, response) => {
       settings.emergencyStopEnabled,
       request.admin.id,
     );
-    audit({
+    await audit({
       adminId: request.admin.id,
       action: 'risk_settings.updated',
       targetType: 'risk_settings',
@@ -308,12 +308,12 @@ router.post('/employees', async (request, response) => {
   const id = randomUUID();
   const passwordHash = await hashPassword(password);
   try {
-    db.transaction(() => {
-      db.prepare(`
+    await db.transaction(async () => {
+    await db.prepare(`
         INSERT INTO admin_users (id, username, password_hash, role)
         VALUES (?, ?, ?, ?)
       `).run(id, username, passwordHash, role);
-      audit({
+      await audit({
         adminId: request.admin.id,
         action: 'employee.created',
         targetType: 'admin_user',
@@ -323,7 +323,7 @@ router.post('/employees', async (request, response) => {
       });
     })();
   } catch (error) {
-    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE' || error.code === '23505') {
       return response.status(409).json({ error: 'An employee with that username already exists.' });
     }
     throw error;
@@ -331,8 +331,8 @@ router.post('/employees', async (request, response) => {
   return response.status(201).json({ employee: { id, username, role } });
 });
 
-router.get('/rounds/:roundId/participants', (request, response) => {
-  const round = db.prepare(`
+router.get('/rounds/:roundId/participants', async (request, response) => {
+  const round = await db.prepare(`
     SELECT trading_rounds.id, trading_rounds.status, trading_rounds.currency,
       trading_rounds.combined_stake_minor AS combinedStakeMinor,
       trading_rounds.frozen_at AS frozenAt, trading_rounds.settled_at AS settledAt,
@@ -343,7 +343,7 @@ router.get('/rounds/:roundId/participants', (request, response) => {
   `).get(request.params.roundId);
   if (!round) return response.status(404).json({ error: 'Trading round not found.' });
 
-  const participants = db.prepare(`
+  const participants = await db.prepare(`
     SELECT users.account_id AS accountId, users.display_name AS name,
       round_participants.stake_minor AS stakeMinor,
       round_participants.allocated_result_minor AS allocatedResultMinor
@@ -448,10 +448,10 @@ const listQueries = {
   `,
 };
 
-router.get('/:resource', (request, response) => {
+router.get('/:resource', async (request, response) => {
   const query = listQueries[request.params.resource];
   if (!query) return response.status(404).json({ error: 'Admin resource not found.' });
-  return response.json({ records: db.prepare(query).all() });
+  return response.json({ records: await db.prepare(query).all() });
 });
 
 module.exports = router;

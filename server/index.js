@@ -3,7 +3,7 @@ const express = require('express');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const { rateLimit } = require('express-rate-limit');
-const db = require('./db');
+const db = require('./database');
 const adminRouter = require('./admin');
 const { audit, login, logout, requireAdmin } = require('./auth');
 const userModule = require('./user');
@@ -96,14 +96,17 @@ app.use('/api/user', requireSameOriginForChanges);
 app.use(express.json({ limit: '2mb', strict: true }));
 app.use(cookieParser());
 
-app.get('/api/health', (request, response) => response.json({
+app.get('/api/health', async (request, response) => {
+  await db.ready;
+  return response.json({
   status: 'ok',
   tradingEnabled: false,
   paymentsEnabled: false,
-}));
-app.get('/api/app-settings', (request, response, next) => {
+  });
+});
+app.get('/api/app-settings', async (request, response, next) => {
   try {
-    const rows = db.prepare(`
+    const rows = await db.prepare(`
       SELECT key, value_json FROM app_settings
       WHERE key IN ('organizationName', 'appLogo')
     `).all();
@@ -141,13 +144,24 @@ app.use('/api/user', userModule.requireUser, userModule.router);
 app.use('/api/admin', requireAdmin, adminRouter);
 app.use('/api', (request, response) => response.status(404).json({ error: 'API route not found.' }));
 
+app.use((error, request, response, next) => {
+  console.error('Request failed:', {
+    method: request.method,
+    path: request.path,
+    type: error.type || error.name,
+    status: error.status,
+  });
+  if (response.headersSent) return next(error);
+  return response.status(500).json({ error: 'The request could not be completed.' });
+});
+
 async function start() {
   let vite;
   if (production) {
-    const buildDirectory = path.resolve('dist');
+    const buildDirectory = path.resolve('public');
     app.use(express.static(buildDirectory, { index: false, fallthrough: true }));
     app.get(/.*/, (request, response, next) => {
-      response.sendFile(path.join(buildDirectory, 'index.html'), (error) => {
+      response.sendFile(path.join(buildDirectory, 'site', 'index.html'), (error) => {
         if (error) next(error);
       });
     });
@@ -160,19 +174,9 @@ async function start() {
     app.use(vite.middlewares);
   }
 
-  app.use((error, request, response, next) => {
-    console.error('Request failed:', {
-      method: request.method,
-      path: request.path,
-      type: error.type || error.name,
-      status: error.status,
-    });
-    if (response.headersSent) return next(error);
-    return response.status(500).json({ error: 'The request could not be completed.' });
-  });
-
+  await db.ready;
+  await db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(new Date().toISOString());
   const server = app.listen(port, '0.0.0.0', () => {
-    db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(new Date().toISOString());
     console.log(`G-Squad is running at http://localhost:${port}`);
     console.log('Live trading and payment processing are disabled.');
   });
@@ -184,7 +188,7 @@ async function start() {
     Promise.resolve(vite?.close())
       .catch((error) => console.error('Could not close Vite cleanly:', error))
       .finally(() => {
-        server.close(() => db.close());
+        server.close(() => void db.close());
         server.closeAllConnections();
       });
   };
@@ -192,7 +196,11 @@ async function start() {
   process.once('SIGTERM', shutdown);
 }
 
-start().catch((error) => {
-  console.error('Could not start G-Squad:', error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  start().catch((error) => {
+    console.error('Could not start G-Squad:', error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = app;

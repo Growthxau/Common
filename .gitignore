@@ -1,6 +1,7 @@
 tasks.json
 node_modules/
 dist/
+public/site/
 .env
 .env.*
 !.env.example
